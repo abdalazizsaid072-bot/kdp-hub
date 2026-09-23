@@ -9,23 +9,39 @@ export { LS };
 
 /* ─────────── الإعدادات ─────────── */
 
-export const DEFAULT_RATES = {
-  formatPerPage: 5, formatMin: 500,
-  translatePerPage: 15, translateMin: 600,
-  account: 500, publishPerEdition: 300,
-  cover: 300, design3d: 200, reel: 400,
-  marketingPlan: 3000, audiobook: 1500,
+// من "قائمة الأسعار الرسمية — سبتمبر 2026" (مصر والسعودية). كل الأرقام تتعدل من الإعدادات
+export const DEFAULT_PRICES = {
+  EG: {
+    formatText: 12, formatMedia: 18, proofread: 6, translateEn: 20, translateDe: 30,
+    cover: 450, cover2: 250, account: 550, ebook: 400, paper: 600,
+    reelMin: 300, poster: 350, marketingMonth: 6000,
+    bulk1: 400, bulk4: 360, bulk10: 320, pkgLaunch: 2600, pkgContinue: 2100, pkgPages: 150,
+    payment: 'الدفع عن طريق فودافون كاش على رقم الواتساب.',
+  },
+  SA: {
+    formatText: 3, formatMedia: 5, proofread: 2, translateEn: 30, translateDe: 40,
+    cover: 350, cover2: 200, account: 250, ebook: 300, paper: 400,
+    reelMin: 300, poster: 200, marketingMonth: 1500,
+    bulk1: 300, bulk4: 270, bulk10: 240, pkgLaunch: 900, pkgContinue: 700, pkgPages: 150,
+    payment: 'التحويل عبر تطبيق برق أو أي تطبيق يدعم التحويل للمحافظ الإلكترونية في مصر، على رقم الواتساب.',
+  },
 };
+export const CURRENCY = { EG: 'جنيه', SA: 'ريال' };
 
 const DEFAULT_SETTINGS = {
   url: '', key: '', userName: '', sarRate: 13.2, usdRate: 50, theme: 'auto',
   notify: { enabled: false, deadlineDays: 2, depositDays: 3, dailyIdea: true, tasks: true },
-  rates: DEFAULT_RATES,
+  prices: DEFAULT_PRICES,
 };
 
 export function loadSettings() {
   const s = LS.get('settings', {});
-  return { ...DEFAULT_SETTINGS, ...s, notify: { ...DEFAULT_SETTINGS.notify, ...(s.notify || {}) }, rates: { ...DEFAULT_RATES, ...(s.rates || {}) } };
+  const { rates, ...rest } = s; // "rates" كانت أسعار تقديرية في النسخة الأولى — اتشالت
+  return {
+    ...DEFAULT_SETTINGS, ...rest,
+    notify: { ...DEFAULT_SETTINGS.notify, ...(s.notify || {}) },
+    prices: { EG: { ...DEFAULT_PRICES.EG, ...(s.prices?.EG || {}) }, SA: { ...DEFAULT_PRICES.SA, ...(s.prices?.SA || {}) } },
+  };
 }
 export function saveSettings(s) { LS.set('settings', s); }
 

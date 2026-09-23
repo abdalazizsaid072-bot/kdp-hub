@@ -1,5 +1,6 @@
 import * as D from './data.js';
 import * as I from './insights.js';
+import { templates } from './templates.js';
 
 const { SCHEMAS, STATUS, SERVICES } = D;
 const $ = (s, r = document) => r.querySelector(s);
@@ -17,7 +18,7 @@ const S = {
   raw: null, source: 'local', syncing: false, error: null, lastSync: D.LS.get('lastSync', null),
   projects: [], tasks: [], expenses: [], ads: [], notes: [], k: null, reminders: [],
   charts: [], route: { name: 'home', params: new URLSearchParams() },
-  pf: { f: 'all', q: '', svc: '', sort: 'recent' }, aPeriod: '6', ideasTab: 'smart', toolTab: 'quote',
+  pf: { f: 'all', q: '', svc: '', sort: 'recent' }, aPeriod: '6', ideasTab: 'smart', toolTab: 'quote', quoteMkt: 'EG', qDaysTouched: false,
   queue: D.LS.get('queue', []), installPrompt: null,
 };
 const hasRemote = () => !!(S.settings.url && S.settings.key);
@@ -361,7 +362,7 @@ VIEWS.home = {
     const hour = new Date().getHours();
     const ins = I.insights(S.projects, k, { ads: S.ads }).slice(0, 4);
     const mix = I.serviceMix(S.projects).slice(0, 6), maxMix = Math.max(1, ...mix.map(m => m.revenue));
-    return `
+    return `${installHintHTML()}
     <div class="hero">
       <h2>${hour < 12 ? 'صباح الخير' : 'مساء الخير'}${S.settings.userName ? ' يا ' + esc(S.settings.userName) : ''} 👋</h2>
       <p>عندك ${k.active} مشروع شغال · ${week} تسليم الأسبوع ده${late ? ` · <b>${late} متأخر</b>` : ''} · ${esc(tv.text)}</p>
@@ -799,7 +800,7 @@ VIEWS.notes = {
 VIEWS.more = {
   title: () => 'المزيد',
   render() {
-    const tiles = [['tasks', 'المهام', 'list-checks', `${S.tasks.filter(t => !t.done).length} مفتوحة`], ['ads', 'Amazon Ads', 'target', `${S.ads.length} سجل`], ['expenses', 'المصروفات', 'receipt', 'صافي الربح'], ['notes', 'ملاحظاتي', 'notebook-pen', `${S.notes.length} ملاحظة`], ['tools', 'الأدوات والحاسبات', 'calculator', 'عروض أسعار، أرباح، غلاف'], ['settings', 'الإعدادات', 'settings', 'الربط والإشعارات'], ['setup', 'دليل الربط والتثبيت', 'book-open-check', 'خطوة بخطوة']];
+    const tiles = [['tasks', 'المهام', 'list-checks', `${S.tasks.filter(t => !t.done).length} مفتوحة`], ['ads', 'Amazon Ads', 'target', `${S.ads.length} سجل`], ['expenses', 'المصروفات', 'receipt', 'صافي الربح'], ['notes', 'ملاحظاتي', 'notebook-pen', `${S.notes.length} ملاحظة`], ['tools', 'الأدوات والرسائل', 'calculator', 'عروض أسعار ورسائل جاهزة'], ['settings', 'الإعدادات', 'settings', 'الربط والإشعارات'], ['setup', 'دليل الربط والتثبيت', 'book-open-check', 'خطوة بخطوة']];
     return `<div class="more-grid">${tiles.map(([k, l, i, s]) => `<a class="card more-tile" href="#/${k}"><div class="kpi-icon">${ic(i)}</div><b>${l}</b><small>${s}</small></a>`).join('')}</div>`;
   },
 };
@@ -811,25 +812,45 @@ const num = (id, d = 0) => { const v = Number(D.toLatin($('#' + id)?.value).repl
 const inp = (id, label, val, icon, extra = '') => `<div class="field"><label for="${id}">${ic(icon)} ${label}</label><input id="${id}" inputmode="decimal" value="${val}" ${extra}></div>`;
 const result = (label, value, hl = false) => `<div class="result ${hl ? 'hl' : ''}"><small>${label}</small><b>${value}</b></div>`;
 
+// [المفتاح، الاسم، الأيقونة، وحدة العدد لو الخدمة ليها عدد]
 const QUOTE_ITEMS = [
-  ['format', 'تنسيق وتجهيز', 'align-justify'], ['translate', 'ترجمة', 'languages'], ['account', 'إنشاء حساب KDP', 'user-plus'], ['publish', 'نشر (لكل نسخة)', 'upload-cloud'],
-  ['cover', 'تصميم غلاف', 'book-image'], ['design3d', 'تصميمات 3D', 'box'], ['reel', 'فيديو / ريلز', 'clapperboard'], ['marketing', 'خطة تسويق', 'megaphone'], ['audiobook', 'كتاب صوتي', 'headphones'],
+  ['format', 'تنسيق وتجهيز الكتاب', 'align-justify'], ['proofread', 'تدقيق لغوي وإملائي', 'spell-check'], ['translate', 'ترجمة', 'languages'],
+  ['cover', 'تصميم غلاف', 'book-image'], ['cover2', 'غلاف اللغة الثانية (عند الترجمة)', 'book-copy'],
+  ['account', 'إنشاء حساب KDP (أول مرة)', 'user-plus'], ['ebook', 'نشر النسخة الإلكترونية', 'tablet-smartphone', 'كتاب'], ['paper', 'نشر النسخة الورقية (إنجليزي فقط)', 'book', 'كتاب'],
+  ['bulk', 'رفع ونشر كتب جاهزة (دور نشر)', 'library', 'كتاب'],
+  ['poster', 'بوستر / موك أب دعائي', 'image', 'تصميم'], ['reel', 'فيديو Reels دعائي', 'clapperboard', 'دقيقة'], ['marketing', 'خطة تسويق متكاملة (فيسبوك وإنستجرام)', 'megaphone', 'شهر'],
 ];
+const PKG_ITEMS = ['format', 'account', 'ebook']; // الحاجات اللي الباقة بتغطيها
+const mktSeg = id => `<div class="seg" id="${id}">${[['EG', 'مصر (جنيه)'], ['SA', 'السعودية (ريال)']].map(([v, l]) => `<button class="${S.quoteMkt === v ? 'on' : ''}" data-v="${v}">${l}</button>`).join('')}</div>`;
 
 VIEWS.tools = {
   title: () => 'الأدوات والحاسبات',
-  sub: () => 'حاسبات بتوفر وقتك في شغل KDP كل يوم',
+  sub: () => 'حاسبات ورسائل جاهزة بتوفر وقتك في شغل KDP',
   render() {
-    const t = S.toolTab, R = S.settings.rates;
-    const tabs = `<div class="seg" id="ttabs" style="margin-bottom:16px;flex-wrap:wrap">${[['quote', 'عرض سعر للعميل'], ['royalty', 'أرباح KDP'], ['cover', 'مقاس الغلاف والكعب'], ['ads', 'حاسبة الإعلانات']].map(([v, l]) => `<button class="${t === v ? 'on' : ''}" data-v="${v}">${l}</button>`).join('')}</div>`;
+    const t = S.toolTab;
+    const tabs = `<div class="seg" id="ttabs" style="margin-bottom:16px;flex-wrap:wrap">${[['quote', 'عرض سعر للعميل'], ['msgs', 'رسائل جاهزة'], ['royalty', 'أرباح KDP'], ['cover', 'مقاس الغلاف والكعب'], ['ads', 'حاسبة الإعلانات']].map(([v, l]) => `<button class="${t === v ? 'on' : ''}" data-v="${v}">${l}</button>`).join('')}</div>`;
+    if (t === 'msgs') {
+      const list = templates(S.settings.prices[S.quoteMkt], S.quoteMkt);
+      return tabs + `<div class="row between" style="margin-bottom:14px">${mktSeg('mMkt')}<span class="muted small">${ic('info')} الأسعار في الرسايل بتتاخد من الإعدادات، فلو غيرت سعر هيتغير هنا لوحده.</span></div>
+      <div class="grid g-2">${list.map(x => `<div class="card"><div class="card-head"><h3>${ic(x.icon)} ${esc(x.title)}</h3></div>
+        <pre class="msg" style="max-height:230px;overflow:auto;margin-top:0">${esc(x.text)}</pre>
+        <div class="row" style="margin-top:12px"><button class="btn sm" data-tcopy="${x.id}">${ic('copy')} نسخ</button><a class="btn wa sm" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(x.text)}">${ic('send')} ابعت واتساب</a></div></div>`).join('')}</div>`;
+    }
     if (t === 'quote') return tabs + `<div class="grid g-main" id="tool">
       <div class="card"><div class="card-head"><h3>${ic('file-badge')} اختار الخدمات</h3><a class="sub" href="#/settings">عدّل الأسعار</a></div>
-        <div class="form">${inp('qPages', 'عدد الصفحات', 150, 'file-text')}${inp('qEd', 'عدد النسخ (عربي/إنجليزي/ورقي…)', 1, 'copy')}</div>
-        <div class="stack" style="gap:8px;margin-top:14px">${QUOTE_ITEMS.map(([k, l, i]) => `<label class="check"><input type="checkbox" data-q="${k}" ${['format', 'account', 'publish'].includes(k) ? 'checked' : ''}>${ic(i)}<span style="flex:1">${l}</span>${['cover', 'design3d', 'reel'].includes(k) ? `<input data-qn="${k}" value="${k === 'design3d' ? 2 : 1}" inputmode="numeric" style="width:54px;padding:4px 8px;border-radius:8px;border:1px solid var(--border-strong);background:var(--surface-solid)" aria-label="العدد">` : ''}</label>`).join('')}</div>
+        ${mktSeg('qMkt')}
+        <div class="form" style="margin-top:14px">
+          ${inp('qPages', 'عدد الصفحات', 150, 'file-text')}
+          <div class="field"><label>${ic('image')} محتوى الكتاب</label><select id="qType"><option value="text">نص فقط</option><option value="media">فيه صور أو جداول</option></select></div>
+          <div class="field"><label>${ic('package')} باقة جاهزة</label><select id="qPkg"><option value="">بدون باقة</option><option value="launch">باقة الانطلاقة (عميل جديد)</option><option value="continue">باقة الاستمرارية (عنده حساب)</option></select></div>
+          <div class="field"><label>${ic('languages')} لغة الترجمة</label><select id="qLang"><option value="en">عربي - إنجليزي</option><option value="de">عربي - ألماني</option></select></div>
+        </div>
+        <p class="small" id="qPkgNote" style="margin:10px 0 0"></p>
+        <div class="stack" style="gap:8px;margin-top:14px">${QUOTE_ITEMS.map(([k, l, i, unit]) => `<label class="check"><input type="checkbox" data-q="${k}" ${['format', 'account', 'ebook'].includes(k) ? 'checked' : ''}>${ic(i)}<span style="flex:1">${l}</span>${unit ? `<input data-qn="${k}" value="1" inputmode="numeric" style="width:54px;padding:4px 8px;border-radius:8px;border:1px solid var(--border-strong);background:var(--surface-solid)" aria-label="العدد"><span class="muted small">${unit}</span>` : ''}</label>`).join('')}</div>
         <div class="form" style="margin-top:14px">
           ${inp('qDisc', 'خصم %', 0, 'badge-percent')}
-          <div class="field"><label>${ic('coins')} العملة</label><select id="qCur"><option value="EGP">جنيه مصري</option><option value="SAR">ريال سعودي</option><option value="USD">دولار</option></select></div>
-          <label class="check full"><input type="checkbox" id="qRush">${ic('zap')} تسليم مستعجل (+30%)</label>
+          ${inp('qDays', 'مدة التنفيذ (أيام عمل)', '', 'calendar-clock')}
+          <label class="check full"><input type="checkbox" id="qNotes" checked>${ic('file-text')} ضيف الملاحظات وطريقة الدفع في آخر الرسالة</label>
         </div>
       </div>
       <div class="card"><div class="card-head"><h3>${ic('receipt-text')} العرض</h3></div><div id="qOut"></div></div>
@@ -861,7 +882,14 @@ VIEWS.tools = {
   },
   after() {
     $$('#ttabs button').forEach(b => b.onclick = () => { S.toolTab = b.dataset.v; renderView(true); });
+    $$('#qMkt button, #mMkt button').forEach(b => b.onclick = () => { S.quoteMkt = b.dataset.v; renderView(true); });
+    if (S.toolTab === 'msgs') {
+      const list = templates(S.settings.prices[S.quoteMkt], S.quoteMkt);
+      $$('[data-tcopy]').forEach(b => b.onclick = () => navigator.clipboard.writeText(list.find(x => x.id === b.dataset.tcopy).text).then(() => toast('اتنسخت الرسالة', 'ok')));
+      return;
+    }
     const tool = $('#tool');
+    if (S.toolTab === 'quote') { S.qDaysTouched = false; $('#qDays').addEventListener('input', () => { S.qDaysTouched = true; }); }
     const run = { quote: calcQuote, royalty: calcRoyalty, cover: calcCover, ads: calcAds }[S.toolTab];
     tool.addEventListener('input', run); tool.addEventListener('change', run);
     $$('#rFmt button').forEach(b => b.onclick = () => { $$('#rFmt button').forEach(x => x.classList.toggle('on', x === b)); calcRoyalty(); });
@@ -869,32 +897,94 @@ VIEWS.tools = {
   },
 };
 
+// "150 صفحة" / "3 كتب" / "1 شهر"
+const cnt = (n, one, few) => `${n} ${n >= 2 && n <= 10 ? few : one}`;
+
 function calcQuote() {
-  const R = S.settings.rates, pages = num('qPages', 0), ed = num('qEd', 1);
-  const on = k => $(`[data-q="${k}"]`).checked, n = k => Number($(`[data-qn="${k}"]`)?.value) || 1;
-  const lines = [];
-  if (on('format')) lines.push([`تنسيق وتجهيز (${ed} نسخة × ${pages} صفحة)`, Math.max(pages * R.formatPerPage, R.formatMin) * ed]);
-  if (on('translate')) lines.push([`ترجمة (${pages} صفحة)`, Math.max(pages * R.translatePerPage, R.translateMin)]);
-  if (on('account')) lines.push(['إنشاء حساب KDP وإعداده', R.account]);
-  if (on('publish')) lines.push([`نشر على أمازون (${ed} نسخة)`, R.publishPerEdition * ed]);
-  if (on('cover')) lines.push([`تصميم غلاف (${n('cover')})`, R.cover * n('cover')]);
-  if (on('design3d')) lines.push([`تصميمات 3D للترويج (${n('design3d')})`, R.design3d * n('design3d')]);
-  if (on('reel')) lines.push([`فيديو / ريلز (${n('reel')})`, R.reel * n('reel')]);
-  if (on('marketing')) lines.push(['خطة تسويق للكتاب (سوشيال + أمازون)', R.marketingPlan]);
-  if (on('audiobook')) lines.push(['تحويل لكتاب صوتي', R.audiobook]);
-  let subtotal = sum(lines, l => l[1]);
-  const rush = $('#qRush').checked, disc = Math.min(num('qDisc', 0), 90), cur = $('#qCur').value;
-  let total = subtotal * (rush ? 1.3 : 1) * (1 - disc / 100);
-  const rate = cur === 'SAR' ? S.settings.sarRate : cur === 'USD' ? S.settings.usdRate : 1;
-  const unit = cur === 'SAR' ? 'ريال' : cur === 'USD' ? '$' : 'جنيه';
-  const conv = v => { const x = v / rate; return cur === 'EGP' ? Math.round(x / 50) * 50 : Math.round(x / 5) * 5; };
-  total = conv(total);
-  const deposit = cur === 'EGP' ? Math.round(total / 2 / 50) * 50 : Math.round(total / 2);
-  let days = Math.ceil(2 + pages * ed / 80 + (on('translate') ? pages / 25 : 0) + (on('cover') || on('design3d') ? 1 : 0));
-  if (rush) days = Math.max(2, Math.ceil(days / 2));
-  const msg = `أهلاً بحضرتك 👋\nده عرض السعر لمشروع كتابك:\n\n${lines.map(l => `• ${l[0]}: ${I.fmt(conv(l[1]))} ${unit}`).join('\n')}${rush ? '\n• تسليم مستعجل: +30%' : ''}${disc ? `\n• خصم خاص: ${disc}%` : ''}\n\nالإجمالي: ${I.fmt(total)} ${unit}\nالعربون للبدء (50%): ${I.fmt(deposit)} ${unit}\nمدة التنفيذ: حوالي ${days} أيام عمل من استلام العربون والملفات ✅`;
+  const mkt = S.quoteMkt, P = S.settings.prices[mkt], cur = D.CURRENCY[mkt];
+  const pages = num('qPages', 0), type = $('#qType').value, lang = $('#qLang').value, pkg = $('#qPkg').value;
+  const perPage = type === 'media' ? P.formatMedia : P.formatText;
+
+  // الباقة بتغطي التنسيق والحساب والنشر الإلكتروني، فبنقفل الاختيارات دي
+  QUOTE_ITEMS.forEach(([k]) => {
+    const box = $(`[data-q="${k}"]`), locked = !!pkg && (PKG_ITEMS.includes(k) || (pkg === 'continue' && k === 'account'));
+    box.disabled = locked; box.closest('label').style.opacity = locked ? .45 : 1;
+  });
+  const on = k => { const b = $(`[data-q="${k}"]`); return b.checked && !b.disabled; };
+  const n = k => Math.max(1, Math.round(Number(D.toLatin($(`[data-qn="${k}"]`)?.value)) || 1));
+
+  const note = $('#qPkgNote');
+  note.innerHTML = !pkg ? '' : type === 'media'
+    ? `<span style="color:var(--warning-text)">${ic('triangle-alert')} الباقات للكتب النص فقط. للكتب اللي فيها صور أو جداول استخدم الخدمات المنفصلة.</span>`
+    : `<span class="muted">${ic('info')} الباقة بتشمل التنسيق لحد ${P.pkgPages} صفحة${pkg === 'launch' ? ' + إنشاء حساب KDP' : ''} + نشر النسخة الإلكترونية ومتابعة القبول. أي صفحة زيادة بتتحسب ${P.formatText} ${cur}.</span>`;
+
+  const lines = [], notes = [];
+  const add = (label, amount, custom) => lines.push({ label, amount: custom ? 0 : amount, custom });
+  if (pkg) {
+    add(pkg === 'launch'
+      ? `باقة الانطلاقة (تنسيق لحد ${P.pkgPages} صفحة + إنشاء حساب KDP + نشر النسخة الإلكترونية ومتابعة القبول)`
+      : `باقة الاستمرارية (تنسيق لحد ${P.pkgPages} صفحة + نشر النسخة الإلكترونية ومتابعة القبول)`, pkg === 'launch' ? P.pkgLaunch : P.pkgContinue);
+    const extra = Math.max(pages - P.pkgPages, 0);
+    if (extra) add(`صفحات إضافية على الباقة (${cnt(extra, 'صفحة', 'صفحات')})`, extra * perPage);
+  }
+  if (on('format')) add(`تنسيق وتجهيز الكتاب (${cnt(pages, 'صفحة', 'صفحات')}${type === 'media' ? ' بصور أو جداول' : ''})`, pages * perPage);
+  if (on('proofread')) add(`تدقيق لغوي وإملائي (${cnt(pages, 'صفحة', 'صفحات')})`, pages * P.proofread);
+  if (on('translate')) { add(`ترجمة ${lang === 'de' ? 'عربي - ألماني' : 'عربي - إنجليزي'} (${cnt(pages, 'صفحة', 'صفحات')})`, pages * (lang === 'de' ? P.translateDe : P.translateEn)); notes.push('السعر النهائي للترجمة يُحسب بعد مراجعة الملف وتحديد عدد الصفحات الفعلي.'); }
+  if (on('cover')) add('تصميم غلاف الكتاب', P.cover);
+  if (on('cover2')) { add('غلاف اللغة الثانية', P.cover2); notes.push('سعر غلاف اللغة الثانية بيبدأ من السعر المذكور حسب التصميم المطلوب.'); }
+  if (on('account')) add('إنشاء حساب Amazon KDP', P.account);
+  if (on('account') || pkg === 'launch') notes.push('حساب KDP يُحتسب مرة واحدة فقط لكل مؤلف، وليس مع كل كتاب جديد.');
+  if (on('ebook')) add(`نشر النسخة الإلكترونية ومتابعة القبول${n('ebook') > 1 ? ` (${cnt(n('ebook'), 'كتاب', 'كتب')})` : ''}`, P.ebook * n('ebook'));
+  if (on('paper')) { add(`نشر النسخة الورقية ومتابعة القبول${n('paper') > 1 ? ` (${cnt(n('paper'), 'كتاب', 'كتب')})` : ''}`, P.paper * n('paper')); notes.push('النسخة الورقية متاحة للكتب الإنجليزية فقط، لأن أمازون لا تدعم طباعة الكتب العربية.'); }
+  if (on('bulk')) {
+    const b = n('bulk'), rate = b <= 3 ? P.bulk1 : b <= 9 ? P.bulk4 : P.bulk10;
+    if (b >= 50) add(`رفع ونشر ${b} كتاب جاهز`, 0, 'عرض سعر مخصص بعد مراجعة عينة من الملفات');
+    else add(`رفع ونشر ${cnt(b, 'كتاب', 'كتب')} جاهزة (${I.fmt(rate)} ${cur} للكتاب)`, rate * b);
+    if (b >= 10) notes.push('الطلبات الكبيرة (10 كتب فأكثر) يُفضَّل تنفيذها بدفعة تجريبية أولى قبل الاتفاق النهائي على الكمية الكاملة.');
+  }
+  if (on('poster')) add(`بوستر / موك أب دعائي (${cnt(n('poster'), 'تصميم', 'تصميمات')})`, P.poster * n('poster'));
+  if (on('reel')) { add(`فيديو Reels دعائي (${cnt(n('reel'), 'دقيقة', 'دقائق')})`, P.reelMin * n('reel')); notes.push('سعر فيديوهات Reels بيبدأ من السعر المذكور ويتحدد نهائيًا حسب المطلوب.'); }
+  if (on('marketing')) add(`خطة تسويق متكاملة على فيسبوك وإنستجرام (${cnt(n('marketing'), 'شهر', 'شهور')})`, P.marketingMonth * n('marketing'));
+  notes.push(P.payment);
+
+  const disc = Math.min(num('qDisc', 0), 90), step = mkt === 'EG' ? 10 : 5;
+  const subtotal = sum(lines, l => l.amount);
+  const total = disc ? Math.round(subtotal * (1 - disc / 100) / step) * step : subtotal;
+  const deposit = Math.ceil(total / 2);
+
+  // لو الخدمات المنفصلة اللي اخترتها بتساوي باقة جاهزة بسعر أقل، نقولك
+  let cheaper = '';
+  if (!pkg && type === 'text' && on('format') && on('ebook') && n('ebook') === 1) {
+    const extra = Math.max(pages - P.pkgPages, 0) * P.formatText;
+    const [price, name] = on('account') ? [P.pkgLaunch, 'باقة الانطلاقة'] : [P.pkgContinue, 'باقة الاستمرارية'];
+    const separate = pages * P.formatText + (on('account') ? P.account : 0) + P.ebook;
+    if (price + extra < separate) cheaper = `${name} أوفر للعميل هنا: ${I.fmt(price + extra)} ${cur} بدل ${I.fmt(separate)} ${cur}. اختارها من "باقة جاهزة".`;
+  }
+
+  // مدة تقريبية بتتحسب لوحدها لحد ما تكتب رقم بإيدك
+  if (!S.qDaysTouched) {
+    const formatting = on('format') || !!pkg;
+    const est = (formatting || on('ebook') || on('paper') || on('bulk') ? 3 : 0) + (formatting ? pages / 50 : 0) + (on('translate') ? pages / 20 : 0) + (on('proofread') ? pages / 100 : 0) + (on('cover') || on('cover2') ? 2 : 0) + (on('bulk') ? n('bulk') : 0) + (on('poster') || on('reel') ? 2 : 0);
+    $('#qDays').value = est ? Math.ceil(est) : '';
+  }
+  const days = num('qDays', 0);
+
+  const msg = [
+    'أهلًا بحضرتك،',
+    'تفاصيل عرض السعر الخاص بكتابك:',
+    '',
+    ...lines.map(l => `- ${l.label}: ${l.custom || `${I.fmt(l.amount)} ${cur}`}`),
+    ...(disc ? [`- خصم خاص: ${disc}%`] : []),
+    '',
+    `الإجمالي: ${I.fmt(total)} ${cur}`,
+    `المقدم المطلوب لتأكيد الحجز والبدء (50%): ${I.fmt(deposit)} ${cur}، والباقي عند التسليم.`,
+    ...(days ? [`مدة التنفيذ المتوقعة: حوالي ${cnt(days, 'يوم', 'أيام')} عمل من استلام المقدم والملفات.`] : []),
+    ...($('#qNotes').checked ? ['', 'ملاحظات:', ...notes.map(x => `- ${x}`)] : []),
+  ].join('\n');
+
   $('#qOut').innerHTML = lines.length ? `
-    <div class="result-grid" style="margin-top:0">${result('الإجمالي', `${I.fmt(total)} ${unit}`, true)}${result('العربون 50%', `${I.fmt(deposit)} ${unit}`)}${result('مدة التنفيذ', `${days} يوم`)}</div>
+    <div class="result-grid" style="margin-top:0">${result('الإجمالي', `${I.fmt(total)} ${cur}`, true)}${result('المقدم 50%', `${I.fmt(deposit)} ${cur}`)}${result('مدة التنفيذ', days ? cnt(days, 'يوم', 'أيام') : '—')}</div>
+    ${cheaper ? `<p class="small" style="color:var(--good-text);margin:12px 0 0">${ic('lightbulb')} ${cheaper}</p>` : ''}
     <pre class="msg" id="qMsg">${esc(msg)}</pre>
     <div class="row" style="margin-top:12px">
       <button class="btn" id="qCopy">${ic('copy')} نسخ</button>
@@ -902,10 +992,11 @@ function calcQuote() {
       <button class="btn primary" id="qSave">${ic('user-plus')} سجّله كعميل</button>
     </div>` : emptyState('mouse-pointer-click', 'اختار خدمة واحدة على الأقل', '');
   paint();
-  $('#qCopy') && ($('#qCopy').onclick = () => navigator.clipboard.writeText(msg).then(() => toast('اتنسخ ✓', 'ok')));
+  $('#qCopy') && ($('#qCopy').onclick = () => navigator.clipboard.writeText(msg).then(() => toast('اتنسخ', 'ok')));
   $('#qSave') && ($('#qSave').onclick = () => openForm('clients', null, {
-    date: D.sheetDay(new Date()), project: lines.map(l => l[0].replace(/\s*\(.*\)/, '')).join(' + '), pages: pages || '', books: '',
-    total: String(total) + (cur === 'SAR' ? ' ريال' : ''), deposit: '0', remaining: '', status: 'في انتظار العربون', nationality: cur === 'SAR' ? 'سعودي' : 'مصري',
+    date: D.sheetDay(new Date()), project: lines.map(l => l.label.replace(/\s*\(.*\)/, '')).join(' + '), pages: pages || '',
+    books: on('ebook') || on('paper') ? String(Math.max(on('ebook') ? n('ebook') : 0, on('paper') ? n('paper') : 0)) : '',
+    total: String(total) + (mkt === 'SA' ? ' ريال' : ''), deposit: '0', remaining: '', status: 'في انتظار العربون', nationality: mkt === 'SA' ? 'سعودي' : 'مصري',
   }));
 }
 
@@ -978,7 +1069,16 @@ VIEWS.settings = {
   render() {
     const st = S.settings, nd = st.notify, perm = 'Notification' in window ? Notification.permission : 'unsupported';
     const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent), standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
-    const rateFields = [['formatPerPage', 'تنسيق — للصفحة'], ['formatMin', 'تنسيق — حد أدنى'], ['translatePerPage', 'ترجمة — للصفحة'], ['translateMin', 'ترجمة — حد أدنى'], ['account', 'إنشاء حساب KDP'], ['publishPerEdition', 'نشر — لكل نسخة'], ['cover', 'تصميم غلاف'], ['design3d', 'تصميم 3D (للواحد)'], ['reel', 'فيديو / ريلز'], ['marketingPlan', 'خطة تسويق'], ['audiobook', 'كتاب صوتي']];
+    const priceFields = [
+      ['formatText', 'تنسيق نص فقط — للصفحة'], ['formatMedia', 'تنسيق بصور أو جداول — للصفحة'], ['proofread', 'تدقيق لغوي وإملائي — للصفحة'],
+      ['translateEn', 'ترجمة عربي - إنجليزي — للصفحة'], ['translateDe', 'ترجمة عربي - ألماني — للصفحة'],
+      ['cover', 'تصميم غلاف (لغة واحدة)'], ['cover2', 'غلاف اللغة الثانية (يبدأ من)'],
+      ['account', 'إنشاء حساب KDP (مرة واحدة)'], ['ebook', 'نشر النسخة الإلكترونية — للكتاب'], ['paper', 'نشر النسخة الورقية — للكتاب'],
+      ['reelMin', 'فيديو Reels — للدقيقة (يبدأ من)'], ['poster', 'بوستر / موك أب — للتصميم'], ['marketingMonth', 'خطة تسويق متكاملة — للشهر'],
+      ['bulk1', 'دور النشر: 1 - 3 كتب — للكتاب'], ['bulk4', 'دور النشر: 4 - 9 كتب — للكتاب'], ['bulk10', 'دور النشر: 10 - 49 كتاب — للكتاب'],
+      ['pkgLaunch', 'باقة الانطلاقة (عميل جديد)'], ['pkgContinue', 'باقة الاستمرارية (عنده حساب)'], ['pkgPages', 'عدد صفحات الباقة'],
+    ];
+    const pin = (m, k) => `<input data-price="${m}:${k}" inputmode="decimal" value="${st.prices[m][k]}" aria-label="${m === 'EG' ? 'مصر' : 'السعودية'}" style="width:100%;padding:8px 10px;border-radius:10px;border:1px solid var(--border-strong);background:var(--surface-2)">`;
     return `<div class="grid g-2">
     <div class="card">
       <div class="card-head"><h3>${ic('sheet')} الربط بشيت "ادارة العمل"</h3><span class="badge tone-${S.source === 'live' ? 'good' : S.source === 'local' ? 'muted' : 'warning'}">${S.source === 'live' ? 'متصل' : S.source === 'local' ? 'غير مربوط' : 'غير متصل'}</span></div>
@@ -1010,14 +1110,20 @@ VIEWS.settings = {
     </div>
     <div class="card">
       <div class="card-head"><h3>${ic('download')} تثبيت التطبيق</h3>${standalone ? `<span class="badge tone-good">${ic('check')}متثبت</span>` : ''}</div>
-      ${S.installPrompt ? `<button class="btn primary" id="sInstall">${ic('download')} ثبّت KDP Hub على الجهاز ده</button>` : ''}
+      ${S.installPrompt ? `<button class="btn primary" id="sInstall">${ic('download')} ثبّت KDP Hub على الجهاز ده</button>` : `<button class="btn" data-act="install-help">${ic('smartphone')} خطوات التثبيت على الموبايل</button>`}
       <ul class="steps" style="margin-top:12px">
         ${isIOS ? '<li>على iPhone: افتح الرابط من Safari ← زرار المشاركة ⬆️ ← "Add to Home Screen"</li>' : '<li>على الموبايل (Chrome): القائمة ⋮ ← "تثبيت التطبيق" أو "Add to Home screen"</li><li>على اللابتوب (Chrome / Edge): أيقونة التثبيت ⊕ في شريط العنوان</li>'}
       </ul>
     </div>
     <div class="card span-2">
-      <div class="card-head"><h3>${ic('badge-dollar-sign')} أسعار خدماتك (لحاسبة عروض الأسعار) — بالجنيه</h3><button class="btn sm ghost" id="rReset">${ic('rotate-ccw')} الافتراضي</button></div>
-      <div class="form" style="grid-template-columns:repeat(auto-fill,minmax(170px,1fr))">${rateFields.map(([k, l]) => `<div class="field"><label>${l}</label><input data-rate="${k}" inputmode="decimal" value="${st.rates[k]}"></div>`).join('')}</div>
+      <div class="card-head"><h3>${ic('badge-dollar-sign')} أسعار خدماتك (من قائمة أسعار سبتمبر 2026)</h3><button class="btn sm ghost" id="rReset">${ic('rotate-ccw')} رجّع أسعار القائمة</button></div>
+      <p class="muted small" style="margin-top:0">الأسعار دي بتستخدمها حاسبة عرض السعر والرسائل الجاهزة. أي تعديل بيتحفظ على الجهاز ده.</p>
+      <div class="table-wrap"><table class="data"><thead><tr><th>الخدمة</th><th style="min-width:110px">مصر (جنيه)</th><th style="min-width:110px">السعودية (ريال)</th></tr></thead>
+      <tbody>${priceFields.map(([k, l]) => `<tr><td style="white-space:normal">${l}</td><td>${pin('EG', k)}</td><td>${pin('SA', k)}</td></tr>`).join('')}</tbody></table></div>
+      <div class="form" style="margin-top:14px">
+        <div class="field"><label>${ic('wallet')} طريقة الدفع (مصر)</label><textarea data-pay="EG" style="min-height:60px">${esc(st.prices.EG.payment)}</textarea></div>
+        <div class="field"><label>${ic('wallet')} طريقة الدفع (السعودية)</label><textarea data-pay="SA" style="min-height:60px">${esc(st.prices.SA.payment)}</textarea></div>
+      </div>
     </div>
     <div class="card span-2">
       <div class="card-head"><h3>${ic('database')} البيانات</h3></div>
@@ -1058,8 +1164,9 @@ VIEWS.settings = {
     $('#sTheme').onchange = e => { st.theme = e.target.value; persist('اتغير المظهر'); applyTheme(); renderView(true); };
     $('#sSar').onchange = e => { st.sarRate = Number(e.target.value) || 13; persist(); processData(); };
     $('#sUsd').onchange = e => { st.usdRate = Number(e.target.value) || 50; persist(); processData(); };
-    $$('[data-rate]').forEach(i => i.onchange = () => { st.rates[i.dataset.rate] = Number(D.toLatin(i.value)) || 0; persist(); });
-    $('#rReset').onclick = () => { st.rates = { ...D.DEFAULT_RATES }; persist('رجعت الأسعار الافتراضية'); renderView(true); };
+    $$('[data-price]').forEach(i => i.onchange = () => { const [m, k] = i.dataset.price.split(':'); st.prices[m][k] = Number(D.toLatin(i.value).replace(/[^\d.]/g, '')) || 0; persist(); });
+    $$('[data-pay]').forEach(t => t.onchange = () => { st.prices[t.dataset.pay].payment = t.value.trim(); persist(); });
+    $('#rReset').onclick = () => { st.prices = JSON.parse(JSON.stringify(D.DEFAULT_PRICES)); persist('رجعت أسعار القائمة'); renderView(true); };
     $('#sInstall') && ($('#sInstall').onclick = async () => { S.installPrompt.prompt(); await S.installPrompt.userChoice; S.installPrompt = null; renderView(true); });
     $('#dExport').onclick = () => {
       const blob = new Blob([JSON.stringify(S.raw, null, 2)], { type: 'application/json' });
@@ -1209,6 +1316,57 @@ function openQuickAdd() {
   $$('#sheet [data-q]').forEach(b => b.onclick = () => { const k = b.dataset.q; if (k === 'quote') { closeSheet(); location.hash = '#/tools?t=quote'; } else openForm(k); });
 }
 
+/* ═════════════ مساعدة التثبيت على الموبايل ═════════════ */
+
+const UA = navigator.userAgent;
+const device = () => ({
+  ios: /iphone|ipad|ipod/i.test(UA) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1),
+  android: /android/i.test(UA),
+  mobile: /android|iphone|ipad|ipod|mobile/i.test(UA) || matchMedia('(max-width: 900px) and (pointer: coarse)').matches,
+  inApp: /FBAN|FBAV|Instagram|WhatsApp|Line\/|Snapchat|TikTok|; wv\)/i.test(UA),
+  iosNotSafari: /CriOS|FxiOS|EdgiOS|OPiOS/i.test(UA),
+  standalone: matchMedia('(display-mode: standalone)').matches || navigator.standalone === true,
+});
+
+function installHintHTML() {
+  const d = device();
+  if (!d.mobile || d.standalone || D.LS.get('installHintHidden', false)) return '';
+  return `<div class="banner" style="border-style:solid">${ic('smartphone')}<p><b>ثبّت KDP Hub على موبايلك</b><br><span class="muted small">عشان يفتح زي أي أبلكيشن وتوصلك الإشعارات.</span></p>
+    <button class="btn primary sm" data-act="install-help">${ic('download')} ثبّته</button><button class="icon-btn" data-act="install-hide" aria-label="إخفاء" style="width:34px;height:34px">${ic('x')}</button></div>`;
+}
+
+async function openInstallHelp() {
+  if (S.installPrompt) { S.installPrompt.prompt(); await S.installPrompt.userChoice; S.installPrompt = null; renderView(true); return; }
+  const d = device(), link = location.origin + location.pathname;
+  let steps;
+  if (d.inApp) steps = [
+    'الرابط اتفتح جوه أبلكيشن تاني (واتساب أو فيسبوك)، ومن هنا التثبيت مش متاح.',
+    d.ios ? 'دوس زرار البوصلة أو النقط التلاتة تحت أو فوق ← <b>Open in Safari</b> (افتح في Safari).' : 'دوس النقط التلاتة ⋮ فوق ← <b>Open in Chrome</b> (افتح في Chrome).',
+    'أو انسخ الرابط من الزرار اللي تحت والصقه في ' + (d.ios ? 'Safari' : 'Chrome') + ' بنفسك.',
+    'بعد ما يفتح هناك ارجع للصفحة دي واتبع الخطوات.',
+  ];
+  else if (d.ios) steps = [
+    d.iosNotSafari ? 'افتح الرابط في <b>Safari</b> (الأضمن على iPhone). انسخه من الزرار اللي تحت.' : 'إنت فاتحه من Safari، تمام.',
+    'دوس زرار المشاركة <b>⬆️</b> (مربع وخارج منه سهم) تحت في نص الشاشة.',
+    'انزل في القايمة واختار <b>Add to Home Screen</b> (إضافة إلى الشاشة الرئيسية).',
+    'دوس <b>Add</b> (إضافة) فوق على اليمين.',
+    'افتح KDP Hub من الأيقونة الجديدة على الشاشة، ومن الإعدادات فعّل الإشعارات.',
+  ];
+  else steps = [
+    'لازم يكون الرابط مفتوح في <b>Google Chrome</b>. لو فاتحه من متصفح تاني (سامسونج أو شاومي) انسخ الرابط وافتحه في Chrome.',
+    'دوس النقط التلاتة <b>⋮</b> فوق على اليمين.',
+    'اختار <b>تثبيت التطبيق</b> (Install app). لو مش لاقيها، اختار <b>إضافة إلى الشاشة الرئيسية</b> (Add to Home screen) ← وبعدين <b>تثبيت</b>.',
+    'افتح KDP Hub من الأيقونة الجديدة، ومن الإعدادات اربط الشيت وفعّل الإشعارات.',
+  ];
+  openSheet({
+    title: `${ic('smartphone')} تثبيت على ${d.ios ? 'iPhone' : d.android ? 'Android' : 'الموبايل'}`,
+    body: `<ol class="steps">${steps.map(s => `<li><span>${s}</span></li>`).join('')}</ol>
+      <div class="row" style="margin-top:16px"><button class="btn" id="copyLink">${ic('copy')} انسخ رابط الأبلكيشن</button></div>
+      <p class="muted small" style="margin-top:12px;direction:ltr;text-align:right">${esc(link)}</p>`,
+  });
+  $('#copyLink').onclick = () => navigator.clipboard.writeText(link).then(() => toast('اتنسخ الرابط', 'ok')).catch(() => toast('انسخ الرابط اللي تحت يدوي', 'err'));
+}
+
 /* ═════════════ الـ Sheet والـ Toast ═════════════ */
 
 function openSheet({ title, body, foot = '' }) {
@@ -1254,6 +1412,8 @@ document.addEventListener('click', e => {
   const add = e.target.closest('[data-add]');
   if (add) { openForm(add.dataset.add); return; }
   if (e.target.closest('[data-act="new-client"]')) openForm('clients');
+  if (e.target.closest('[data-act="install-help"]')) openInstallHelp();
+  if (e.target.closest('[data-act="install-hide"]')) { D.LS.set('installHintHidden', true); renderView(true); }
 });
 
 /* ═════════════ الثيم ═════════════ */

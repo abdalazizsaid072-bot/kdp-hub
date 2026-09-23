@@ -281,12 +281,13 @@ export const short = (s, n = 60) => { s = String(s || '').trim(); return s.lengt
 
 export function waLink(p, kind) {
   const num = whatsappNumber(p);
-  const name = p.displayName.split(' ').slice(0, 2).join(' ');
+  const proj = short(p.project, 70);
+  const cur = p.currency === 'SAR' ? 'ريال' : 'جنيه';
   const msgs = {
-    reminder: `أهلاً أستاذ ${name} 👋\nبفكّر حضرتك بالمبلغ المتبقي لمشروع (${short(p.project, 70)}) وقيمته ${fmt(p.remainingEGP / p.rate)} ${p.currency === 'SAR' ? 'ريال' : 'جنيه'}.\nشكراً لثقتك 🙏`,
-    deposit: `أهلاً أستاذ ${name} 👋\nجاهزين نبدأ في مشروع (${short(p.project, 70)}) فور وصول العربون.\nلو حوّلته النهارده نقدر نبدأ من بكرة إن شاء الله ✅`,
-    update: `أهلاً أستاذ ${name} 👋\nتحديث سريع على مشروعك (${short(p.project, 70)}): الشغل ماشي تمام وهنبعتلك المرحلة الجاية قريب إن شاء الله.`,
-    delivered: `أهلاً أستاذ ${name} 🎉\nالحمد لله خلصنا مشروعك (${short(p.project, 70)}).\nيسعدنا جداً تقييمك لتجربتك معانا، ولو عندك أي كتاب تاني إحنا في الخدمة 🙏`,
+    reminder: `أهلًا بحضرتك،\nبفكّر حضرتك بالمبلغ المتبقي لمشروع (${proj}) وقيمته ${fmt(p.remainingEGP / p.rate)} ${cur}.\nشكرًا لثقتك.`,
+    deposit: `أهلًا بحضرتك،\nجاهزين نبدأ في مشروع (${proj}) أول ما المقدم يوصل.\nلو اتحوّل النهارده نقدر نبدأ من بكرة إن شاء الله.`,
+    update: `أهلًا بحضرتك،\nتحديث سريع على مشروعك (${proj}): الشغل ماشي كويس، وهبعت لحضرتك المرحلة الجاية قريب إن شاء الله.`,
+    delivered: `أهلًا بحضرتك،\nالحمد لله خلصنا مشروعك (${proj}).\nيسعدني جدًا أعرف رأي حضرتك في الشغل، ولو فيه أي كتاب تاني أنا في الخدمة.`,
   };
   return num ? `https://wa.me/${num}?text=${encodeURIComponent(msgs[kind] || '')}` : '';
 }

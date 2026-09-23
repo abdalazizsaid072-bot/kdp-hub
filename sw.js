@@ -1,6 +1,6 @@
 // KDP Hub Service Worker — تشغيل بدون نت + إشعارات في الخلفية
-const CACHE = 'kdphub-v1';
-const SHELL = ['./', 'index.html', 'styles.css', 'js/app.js', 'js/data.js', 'js/insights.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/badge-96.png'];
+const CACHE = 'kdphub-v2';
+const SHELL = ['./', 'index.html', 'styles.css', 'js/app.js', 'js/data.js', 'js/insights.js', 'js/templates.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/badge-96.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));

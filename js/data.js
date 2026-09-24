@@ -76,10 +76,11 @@ export const SCHEMAS = {
     { key: 'date', label: 'تاريخ الإضافة', type: 'date', icon: 'calendar', auto: true },
   ],
   expenses: [
+    { key: 'kind', label: 'النوع', type: 'select', icon: 'split', options: ['شغل', 'شخصي'] },
     { key: 'date', label: 'التاريخ', type: 'date', icon: 'calendar' },
     { key: 'title', label: 'البند', type: 'text', icon: 'receipt', required: true },
-    { key: 'category', label: 'الفئة', type: 'text', icon: 'tag', list: ['اشتراكات وبرامج', 'إعلانات', 'مترجمين / فريلانسرز', 'إنترنت واتصالات', 'أدوات وتصميم', 'أخرى'] },
-    { key: 'amount', label: 'المبلغ', type: 'money', icon: 'wallet', required: true },
+    { key: 'category', label: 'الفئة', type: 'text', icon: 'tag', list: [] },
+    { key: 'amount', label: 'المبلغ', type: 'money', icon: 'wallet', required: true, hint: 'اكتب "دولار" أو "ريال" جنب الرقم لو مش بالجنيه' },
     { key: 'notes', label: 'ملاحظات', type: 'textarea', icon: 'sticky-note', full: true },
   ],
   ads: [
@@ -101,6 +102,63 @@ export const SCHEMAS = {
     { key: 'date', label: 'التاريخ', type: 'date', icon: 'calendar', auto: true },
   ],
 };
+
+/* ─────────── المدفوعات والحملات ─────────── */
+
+export const PAY_METHODS = ['فودافون كاش', 'إنستاباي', 'برق', 'تحويل بنكي', 'بايونير', 'كاش', 'أخرى'];
+export const MONEY_UNITS = ['جنيه', 'ريال', 'دولار'];
+export const PAY_STATUS = { pending: 'في انتظار التأكيد', confirmed: 'مؤكد', rejected: 'مش واصل' };
+export const PLATFORMS = ['فيسبوك وإنستجرام', 'تيك توك', 'جوجل', 'سناب شات', 'يوتيوب', 'X (تويتر)', 'أخرى'];
+export const COUNTRIES = ['مصر', 'السعودية', 'الإمارات', 'الكويت', 'قطر', 'البحرين', 'عُمان', 'الأردن', 'العراق', 'المغرب', 'الجزائر', 'تونس', 'ليبيا', 'فلسطين', 'لبنان', 'أوروبا', 'أمريكا', 'دول أخرى'];
+
+/* ─────────── الفلوس: مصاريف، اشتراكات، أقساط، دخل ─────────── */
+
+export const WORK_CATS = ['مترجمين / فريلانسرز', 'أدوات وتصميم', 'إنترنت واتصالات', 'إعلانات (غير الحملات)', 'أجهزة وصيانة', 'مصاريف شغل تانية'];
+export const PERSONAL_CATS = ['أكل وشرب', 'مواصلات وبنزين', 'بيت وفواتير', 'صحة وعلاج', 'لبس', 'خروج وترفيه', 'أهل وهدايا', 'تعليم وكورسات', 'مصاريف شخصية تانية'];
+SCHEMAS.expenses.find(f => f.key === 'category').list = [...WORK_CATS, ...PERSONAL_CATS];
+export const INCOME_SOURCES = ['مرتب شغل KDP', 'أرباح كتب على أمازون', 'شغل فريلانس تاني', 'مكافأة / عمولة', 'دخل تاني'];
+export const SUB_CATEGORIES = ['تصميم', 'ذكاء اصطناعي', 'صوت وفيديو', 'تخزين وأدوات', 'تعليم', 'ترفيه', 'أخرى'];
+// [الاسم، التصنيف] — السعر بتكتبه انت
+export const SUB_PRESETS = [['Canva', 'تصميم'], ['ChatGPT', 'ذكاء اصطناعي'], ['Claude', 'ذكاء اصطناعي'], ['Gemini', 'ذكاء اصطناعي'], ['ElevenLabs', 'صوت وفيديو'], ['CapCut', 'صوت وفيديو'], ['YouTube Premium', 'ترفيه'], ['Adobe', 'تصميم'], ['Freepik', 'تصميم'], ['Google One', 'تخزين وأدوات']];
+
+SCHEMAS.subscriptions = [
+  { key: 'name', label: 'اسم البرنامج', type: 'text', icon: 'app-window', required: true, list: SUB_PRESETS.map(x => x[0]) },
+  { key: 'price', label: 'السعر', type: 'money', icon: 'wallet', required: true },
+  { key: 'currency', label: 'العملة', type: 'select', icon: 'banknote', options: MONEY_UNITS },
+  { key: 'cycle', label: 'التجديد', type: 'select', icon: 'repeat', options: ['شهري', 'سنوي'] },
+  { key: 'start', label: 'آخر مرة دفعت فيها', type: 'date', icon: 'calendar', required: true, hint: 'منه بنحسب ميعاد التجديد الجاي' },
+  { key: 'category', label: 'التصنيف', type: 'text', icon: 'tag', list: SUB_CATEGORIES },
+  { key: 'method', label: 'طريقة الدفع', type: 'text', icon: 'credit-card', list: ['فيزا', 'ماستركارد', 'فودافون كاش', 'PayPal', 'أخرى'] },
+  { key: 'status', label: 'الحالة', type: 'select', icon: 'activity', options: ['شغال', 'ملغي'] },
+  { key: 'cancelDate', label: 'تاريخ الإلغاء (لو لغيته)', type: 'date', icon: 'calendar-x' },
+  { key: 'notes', label: 'ملاحظات', type: 'textarea', icon: 'sticky-note', full: true },
+];
+SCHEMAS.installments = [
+  { key: 'name', label: 'القسط', type: 'text', icon: 'calendar-range', required: true, list: ['قسط اللابتوب', 'قسط الموبايل', 'قسط العربية', 'جمعية', 'قرض'] },
+  { key: 'monthly', label: 'القسط الشهري', type: 'money', icon: 'wallet', required: true },
+  { key: 'months', label: 'عدد الشهور', type: 'number', icon: 'hash', required: true },
+  { key: 'start', label: 'تاريخ أول قسط', type: 'date', icon: 'calendar', required: true, hint: 'اليوم ده هو ميعاد القسط كل شهر' },
+  { key: 'paidCount', label: 'اتدفع كام قسط لحد دلوقتي', type: 'number', icon: 'check-check' },
+  { key: 'total', label: 'المبلغ الكلي (اختياري)', type: 'money', icon: 'sigma' },
+  { key: 'currency', label: 'العملة', type: 'select', icon: 'banknote', options: MONEY_UNITS },
+  { key: 'status', label: 'الحالة', type: 'select', icon: 'activity', options: ['شغال', 'خلص'] },
+  { key: 'notes', label: 'ملاحظات', type: 'textarea', icon: 'sticky-note', full: true },
+];
+SCHEMAS.otherIncome = [
+  { key: 'date', label: 'التاريخ', type: 'date', icon: 'calendar' },
+  { key: 'source', label: 'المصدر', type: 'text', icon: 'hand-coins', required: true, list: INCOME_SOURCES },
+  { key: 'amount', label: 'المبلغ', type: 'money', icon: 'wallet', required: true },
+  { key: 'currency', label: 'العملة', type: 'select', icon: 'banknote', options: MONEY_UNITS },
+  { key: 'notes', label: 'ملاحظات', type: 'textarea', icon: 'sticky-note', full: true },
+];
+
+// تحويل أي مبلغ لجنيه عشان نجمع ونقارن
+export function toEGP(amount, unit, settings) {
+  const u = String(unit || '');
+  if (/ريال|sar/i.test(u)) return amount * (Number(settings.sarRate) || 13);
+  if (/دولار|\$|usd/i.test(u)) return amount * (Number(settings.usdRate) || 50);
+  return amount;
+}
 
 /* ─────────── فهم النصوص ─────────── */
 
@@ -250,6 +308,18 @@ export async function fetchRemote(settings) {
   return json;
 }
 
+// صورة تحويل محفوظة على درايف (بترجع base64)
+export async function fetchReceipt(settings, id) {
+  const u = new URL(settings.url);
+  u.searchParams.set('key', settings.key);
+  u.searchParams.set('action', 'file');
+  u.searchParams.set('id', id);
+  const res = await fetch(u.toString(), { redirect: 'follow' });
+  const json = await res.json();
+  if (!json.ok) throw new Error(json.error || 'مش قادر أجيب الصورة');
+  return `data:${json.mime};base64,${json.b64}`;
+}
+
 export async function postRemote(settings, payload) {
   const res = await fetch(settings.url, {
     method: 'POST', redirect: 'follow',
@@ -294,14 +364,43 @@ export function demoData() {
       { _row: 3, date: d(0, 3), title: 'تصميم 3 Mockups 3D لإعلانات سعد', client: 'سعد فودة', due: sheetDay(new Date(Date.now() + 3 * 864e5)), priority: 'مهمة', status: 'لم تبدأ', notes: '' },
     ],
     expenses: [
-      { _row: 2, date: d(1, 1), title: 'اشتراك Canva Pro', category: 'اشتراكات وبرامج', amount: '650', notes: '' },
-      { _row: 3, date: d(0, 1), title: 'اشتراك Canva Pro', category: 'اشتراكات وبرامج', amount: '650', notes: '' },
-      { _row: 4, date: d(0, 4), title: 'إعلان فيسبوك لخدمات النشر', category: 'إعلانات', amount: '1200', notes: '' },
+      { _row: 2, date: d(1, 12), title: 'مترجم فريلانسر (فصلين)', category: 'مترجمين / فريلانسرز', amount: '1500', notes: '', kind: 'شغل' },
+      { _row: 3, date: d(0, 3), title: 'باقة إنترنت البيت', category: 'إنترنت واتصالات', amount: '450', notes: '', kind: 'شغل' },
+      { _row: 4, date: d(0, 5), title: 'مشتريات البيت', category: 'بيت وفواتير', amount: '2200', notes: '', kind: 'شخصي' },
+      { _row: 5, date: d(0, 9), title: 'مواصلات الشهر', category: 'مواصلات وبنزين', amount: '800', notes: '', kind: 'شخصي' },
+      { _row: 6, date: d(1, 7), title: 'مشتريات البيت', category: 'بيت وفواتير', amount: '2000', notes: '', kind: 'شخصي' },
+    ],
+    subscriptions: [
+      { _row: 2, name: 'Canva', category: 'تصميم', price: '15', currency: 'دولار', cycle: 'شهري', start: sheetDay(new Date(y, m - 3, 20)), status: 'شغال', cancelDate: '', method: 'فيزا', notes: '' },
+      { _row: 3, name: 'ChatGPT', category: 'ذكاء اصطناعي', price: '20', currency: 'دولار', cycle: 'شهري', start: sheetDay(new Date(y, m - 2, 5)), status: 'شغال', cancelDate: '', method: 'فيزا', notes: '' },
+      { _row: 4, name: 'ElevenLabs', category: 'صوت وفيديو', price: '5', currency: 'دولار', cycle: 'شهري', start: sheetDay(new Date(y, m - 1, new Date().getDate() + 2)), status: 'شغال', cancelDate: '', method: 'فيزا', notes: '' },
+    ],
+    installments: [
+      { _row: 2, name: 'قسط اللابتوب', total: '36000', monthly: '3000', months: '12', start: sheetDay(new Date(y, m - 4, 10)), paidCount: '4', lastPaid: '', currency: 'جنيه', status: '', notes: '' },
+    ],
+    otherIncome: [
+      { _row: 2, date: d(1, 28), source: 'مرتب شغل KDP', amount: '6000', currency: 'جنيه', notes: '' },
+      { _row: 3, date: d(0, 1), source: 'مرتب شغل KDP', amount: '6000', currency: 'جنيه', notes: '' },
     ],
     ads: [
       { _row: 2, date: d(1, 10), book: 'حسام فؤاد', campaign: 'Auto - Launch', type: 'Sponsored Products - Auto', spend: '42', sales: '96', orders: '12', clicks: '160', impressions: '38000', notes: '' },
       { _row: 3, date: d(0, 3), book: 'حسام فؤاد', campaign: 'Exact keywords', type: 'Sponsored Products - Keywords', spend: '30', sales: '118', orders: '15', clicks: '95', impressions: '14000', notes: '' },
     ],
     notes: [],
+    payments: [
+      { _row: 2, date: d(0, 8), client: 'د. أحمد لامي', project: 'تجهيز ونشر كتاب إنجليزي جزئين', projectRow: '15', amount: '2100', currency: 'جنيه', method: 'فودافون كاش', receipt: '', status: 'مؤكد', applied: 'نعم', notes: '' },
+      { _row: 3, date: sheetDay(new Date()), client: 'محمد سعيد', project: 'تنسيق ونشر نسختين', projectRow: '16', amount: '3100', currency: 'جنيه', method: 'إنستاباي', receipt: '', status: 'في انتظار التأكيد', applied: '', notes: 'بعت صورة التحويل على الواتساب' },
+    ],
+    campaigns: [
+      { _row: 2, id: 'CDEMO1', date: d(2, 1), name: 'حملة خدمات النشر — أغسطس', platform: 'فيسبوك وإنستجرام', countries: 'مصر، السعودية', start: d(2, 1), end: d(2, 15), budget: '1000', currency: 'جنيه', spent: '1000', status: '', notes: 'فيديو قبل وبعد التنسيق' },
+      { _row: 3, id: 'CDEMO2', date: d(1, 1), name: 'حملة الترجمة والنشر', platform: 'فيسبوك وإنستجرام', countries: 'مصر، الإمارات، الكويت', start: d(1, 1), end: d(1, 28), budget: '1500', currency: 'جنيه', spent: '1450', status: '', notes: '' },
+      { _row: 4, id: 'CDEMO3', date: d(0, 1), name: 'حملة الخليج — سبتمبر', platform: 'فيسبوك وإنستجرام', countries: 'السعودية، الإمارات، الكويت، قطر', start: sheetDay(new Date(y, m, new Date().getDate() - 6)), end: sheetDay(new Date(y, m, new Date().getDate() + 8)), budget: '60', currency: 'دولار', spent: '', status: '', notes: 'استهداف مؤلفين وكتّاب' },
+    ],
+    campaignIncome: [
+      { _row: 2, date: d(2, 5), campaignId: 'CDEMO1', campaign: 'حملة خدمات النشر — أغسطس', client: 'عمر أشرف', country: 'مصر', amount: '800', currency: 'جنيه', notes: '' },
+      { _row: 3, date: d(2, 9), campaignId: 'CDEMO1', campaign: 'حملة خدمات النشر — أغسطس', client: 'سعد فودة', country: 'مصر', amount: '2500', currency: 'جنيه', notes: 'مقدم' },
+      { _row: 4, date: d(1, 6), campaignId: 'CDEMO2', campaign: 'حملة الترجمة والنشر', client: 'ناجي عوض', country: 'مصر', amount: '6700', currency: 'جنيه', notes: '' },
+      { _row: 5, date: d(0, 2), campaignId: 'CDEMO3', campaign: 'حملة الخليج — سبتمبر', client: 'م. خالد العتيبي', country: 'السعودية', amount: '200', currency: 'ريال', notes: '' },
+    ],
   };
 }

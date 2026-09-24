@@ -1,6 +1,6 @@
 // التحليلات والأفكار الذكية والتذكيرات — كلها بتتحسب من بيانات الشيت
 
-import { SERVICES, STATUS, monthKey, startOfDay, daysBetween, parseDate, parseMoney, toLatin, whatsappNumber, isoDay } from './data.js';
+import { SERVICES, STATUS, monthKey, startOfDay, daysBetween, parseDate, parseMoney, toLatin, whatsappNumber, isoDay, toEGP, PERSONAL_CATS } from './data.js';
 
 export const fmt = n => new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(Math.round(n || 0));
 export const money = n => `${fmt(n)} ج.م`;
@@ -32,7 +32,7 @@ export function kpis(projects, expenses = []) {
   const dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
   const projected = now.getDate() >= 5 ? revCur / now.getDate() * dim : null;
 
-  const expCur = sum(expenses.filter(e => e.dateObj && monthKey(e.dateObj) === thisKey), e => e.amountEGP);
+  const expCur = sum(expenses.filter(e => e.kindKey !== 'personal' && e.dateObj && monthKey(e.dateObj) === thisKey), e => e.amountEGP);
   const clientsCount = new Set(bill.map(p => p.clientId)).size;
   const repeat = Object.values(groupBy(bill, p => p.clientId)).filter(g => g.length > 1).length;
   const totalAll = sum(bill, p => p.totalEGP), paidAll = sum(bill, p => p.paidEGP);
@@ -65,7 +65,7 @@ export function monthly(projects, months, expenses = []) {
       key: k, label: monthLabel(k), count: ps.length,
       revenue: sum(ps, p => p.totalEGP), collected: sum(ps, p => p.paidEGP), remaining: sum(ps, p => p.remainingEGP),
       pages: sum(ps, p => p.pagesN),
-      expenses: sum(expenses.filter(e => e.dateObj && monthKey(e.dateObj) === k), e => e.amountEGP),
+      expenses: sum(expenses.filter(e => e.kindKey !== 'personal' && e.dateObj && monthKey(e.dateObj) === k), e => e.amountEGP),
     };
   });
 }
@@ -102,7 +102,118 @@ export function upcoming(projects) {
 export function enrichExpense(e, settings) {
   const m = parseMoney(e.amount);
   const rate = m.currency === 'SAR' ? settings.sarRate : m.currency === 'USD' ? settings.usdRate : 1;
-  return { ...e, sheet: 'expenses', id: 'e' + e._row, dateObj: parseDate(e.date), amountEGP: m.amount * rate };
+  const personal = /شخص/.test(e.kind || '') || (!e.kind && PERSONAL_CATS.includes(e.category));
+  return { ...e, sheet: 'expenses', id: 'e' + e._row, dateObj: parseDate(e.date), amountEGP: m.amount * rate, kindKey: personal ? 'personal' : 'work' };
+}
+
+/* ─────────── الاشتراكات والأقساط والدخل الإضافي ─────────── */
+
+const dim = (y, m) => new Date(y, m + 1, 0).getDate();
+const dayIn = (y, m, day) => new Date(y, m, Math.min(day, dim(y, m)));
+const mIndex = d => d.getFullYear() * 12 + d.getMonth();
+const keyToDate = key => { const [y, m] = key.split('-').map(Number); return new Date(y, m - 1, 1); };
+
+export function enrichSub(s, settings) {
+  const priceN = numOf(s.price), start = parseDate(s.start);
+  const cancelled = /ملغ|اتلغى|لغيت|وقف/.test(s.status || ''), cancelDate = parseDate(s.cancelDate);
+  const yearly = /سنو/.test(s.cycle || '');
+  const priceEGP = toEGP(priceN, s.currency, settings);
+  // تاريخ الخصم في شهر معين (أو null لو مفيش خصم فيه)
+  const chargeDate = key => {
+    if (!start) return null;
+    const md = keyToDate(key);
+    if (yearly && md.getMonth() !== start.getMonth()) return null;
+    const d = dayIn(md.getFullYear(), md.getMonth(), start.getDate());
+    if (d < startOfDay(start)) return null;
+    if (cancelled && d > (cancelDate || startOfDay())) return null;
+    return d;
+  };
+  let next = null;
+  if (start && !cancelled) {
+    const t = startOfDay();
+    for (let i = 0; i <= 13 && !next; i++) { const k = monthKey(new Date(t.getFullYear(), t.getMonth() + i, 1)); const d = chargeDate(k); if (d && d >= t) next = d; }
+  }
+  return {
+    ...s, sheet: 'subscriptions', id: 's' + s._row, priceN, priceEGP, startDate: start, cancelled, yearly,
+    monthlyEGP: cancelled ? 0 : priceEGP / (yearly ? 12 : 1), next, daysToNext: next ? daysBetween(startOfDay(), next) : null,
+    chargeIn: key => chargeDate(key) ? priceEGP : 0, chargeDate,
+  };
+}
+
+export function enrichInstallment(i, settings) {
+  const monthlyN = numOf(i.monthly), months = Math.round(numOf(i.months)), start = parseDate(i.start);
+  const paidCount = Math.min(Math.round(numOf(i.paidCount)), months || Infinity);
+  const monthlyEGP = toEGP(monthlyN, i.currency, settings);
+  const total = numOf(i.total) || monthlyN * months;
+  const today = startOfDay(), thisKey = monthKey(today);
+  const done = /خلص|منته|اتقفل/.test(i.status || '') || (months > 0 && paidCount >= months);
+  const inRange = key => start && months > 0 && (() => { const idx = mIndex(keyToDate(key)) - mIndex(start); return idx >= 0 && idx < months; })();
+  const paidThisMonth = i.lastPaid === thisKey;
+  let nextDue = null;
+  if (start && !done) {
+    for (let k = 0; k <= 12 && !nextDue; k++) {
+      const md = new Date(today.getFullYear(), today.getMonth() + k, 1), key = monthKey(md);
+      if (!inRange(key) || (k === 0 && paidThisMonth)) continue;
+      nextDue = dayIn(md.getFullYear(), md.getMonth(), start.getDate());
+    }
+  }
+  const end = start && months ? dayIn(start.getFullYear(), start.getMonth() + months - 1, start.getDate()) : null;
+  return {
+    ...i, sheet: 'installments', id: 'q' + i._row, monthlyN, monthlyEGP, months, paidCount, startDate: start, endDate: end, total,
+    remainingN: Math.max(total - paidCount * monthlyN, 0), remainingEGP: toEGP(Math.max(total - paidCount * monthlyN, 0), i.currency, settings),
+    done, paidThisMonth, nextDue, daysToDue: nextDue ? daysBetween(today, nextDue) : null,
+    dueIn: key => !done || mIndex(keyToDate(key)) <= mIndex(today) ? (inRange(key) ? monthlyEGP : 0) : 0,
+  };
+}
+
+export function enrichOtherIncome(x, settings) {
+  const amountN = numOf(x.amount);
+  return { ...x, sheet: 'otherIncome', id: 'o' + x._row, dateObj: parseDate(x.date), amountN, amountEGP: toEGP(amountN, x.currency, settings) };
+}
+
+/* ─────────── تقفيل الشهر: دخلت كام وراحت فين ─────────── */
+
+export function monthClose(key, d, mode = 'auto') {
+  const md = keyToDate(key), mStart = md, mEnd = new Date(md.getFullYear(), md.getMonth() + 1, 0);
+  const inM = dt => dt && monthKey(dt) === key;
+  const transfers = d.payments.filter(p => p.statusKey === 'confirmed' && inM(p.dateObj));
+  const projects = d.projects.filter(p => !p.isLead && inM(p.date));
+  const transfersEGP = transfers.reduce((a, p) => a + p.amountEGP, 0), projectsEGP = projects.reduce((a, p) => a + p.paidEGP, 0);
+  const useTransfers = mode === 'transfers' || (mode === 'auto' && transfers.length > 0);
+  const clients = useTransfers ? transfersEGP : projectsEGP;
+  const fromAds = d.incomes.filter(i => inM(i.dateObj)).reduce((a, i) => a + i.amountEGP, 0);
+  const otherItems = d.otherIncome.filter(x => inM(x.dateObj)).map(x => ({ label: x.source || 'دخل', sub: x.notes, amount: x.amountEGP }));
+  const other = otherItems.reduce((a, x) => a + x.amount, 0);
+
+  // الإعلانات: صرف كل حملة بيتقسم على الأيام، والشهر ده بياخد نصيبه من الأيام اللي فيه
+  const adsItems = d.campaigns.filter(c => c.state !== 'scheduled' && c.spentEGP).map(c => {
+    const from = c.startDate > mStart ? c.startDate : mStart, to = c.endDate < mEnd ? c.endDate : mEnd;
+    const days = to >= from ? daysBetween(from, to) + 1 : 0;
+    return { label: c.name, sub: `${days} من ${c.totalDays} يوم`, amount: c.spentEGP * days / c.totalDays };
+  }).filter(x => x.amount > 0);
+  const subsItems = d.subs.map(s => {
+    const cd = s.chargeDate(key);
+    return { label: s.name, sub: cd ? `${cd > startOfDay() ? 'هيتخصم' : 'اتخصم'} ${cd.getDate()}/${cd.getMonth() + 1}` : '', amount: s.chargeIn(key) };
+  }).filter(x => x.amount > 0);
+  const instItems = d.installments.map(i => ({ label: i.name, sub: i.lastPaid === key ? 'اتدفع' : 'لسه', amount: i.dueIn(key) })).filter(x => x.amount > 0);
+  const exps = d.expenses.filter(e => inM(e.dateObj));
+  const workItems = exps.filter(e => e.kindKey === 'work').map(e => ({ label: e.title, sub: e.category, amount: e.amountEGP }));
+  const personalItems = exps.filter(e => e.kindKey === 'personal').map(e => ({ label: e.title, sub: e.category, amount: e.amountEGP }));
+  const tot = arr => arr.reduce((a, x) => a + x.amount, 0);
+  const ads = tot(adsItems), subs = tot(subsItems), work = tot(workItems), inst = tot(instItems), personal = tot(personalItems);
+  const income = clients + other, spend = ads + subs + work + inst + personal;
+  return {
+    key, useTransfers, hasTransfers: transfers.length > 0, transfersEGP, projectsEGP, clients, fromAds, other, otherItems, income,
+    groups: [
+      { key: 'ads', label: 'الإعلانات', icon: 'megaphone', color: '--s2', total: ads, items: adsItems },
+      { key: 'subs', label: 'الاشتراكات', icon: 'repeat', color: '--s7', total: subs, items: subsItems },
+      { key: 'work', label: 'مصاريف الشغل', icon: 'briefcase', color: '--s1', total: work, items: workItems },
+      { key: 'inst', label: 'الأقساط', icon: 'calendar-range', color: '--s4', total: inst, items: instItems },
+      { key: 'personal', label: 'مصاريف شخصية', icon: 'user', color: '--s5', total: personal, items: personalItems },
+    ],
+    spend, left: income - spend, businessProfit: clients + other - ads - subs - work,
+    adsReturn: ads ? fromAds / ads : null,
+  };
 }
 export function enrichTask(t) {
   const dueDate = parseDate(t.due);
@@ -118,6 +229,64 @@ export function enrichAd(a) {
     cpc: clicks ? spend / clicks : null, ctr: impressions ? clicks / impressions * 100 : null, cvr: clicks ? orders / clicks * 100 : null,
   };
 }
+
+/* ─────────── المدفوعات (صور التحويلات) ─────────── */
+
+const numOf = v => Number(toLatin(v).replace(/,/g, '').match(/\d+(\.\d+)?/)?.[0] || 0);
+
+export function enrichPayment(p, settings) {
+  const amountN = numOf(p.amount);
+  const s = String(p.status || '');
+  const statusKey = /مش واصل|مرفوض|رفض/.test(s) ? 'rejected' : /مؤكد|وصلت|تم التأكيد/.test(s) ? 'confirmed' : 'pending';
+  return {
+    ...p, sheet: 'payments', id: 'p' + p._row, dateObj: parseDate(p.date), amountN,
+    amountEGP: toEGP(amountN, p.currency, settings), statusKey, applied: /نعم|تم/.test(p.applied || ''),
+    projectRowN: Number(toLatin(p.projectRow)) || null,
+  };
+}
+
+/* ─────────── حملاتي الإعلانية ─────────── */
+
+export function enrichIncome(x, settings) {
+  const amountN = numOf(x.amount);
+  return { ...x, sheet: 'campaignIncome', id: 'i' + x._row, dateObj: parseDate(x.date), amountN, amountEGP: toEGP(amountN, x.currency, settings) };
+}
+
+export function enrichCampaign(c, incomes, settings) {
+  const today = startOfDay();
+  const start = parseDate(c.start) || parseDate(c.date) || today;
+  const end = parseDate(c.end) || start;
+  const total = Math.max(daysBetween(start, end) + 1, 1);
+  const elapsed = Math.min(Math.max(daysBetween(start, today) + 1, 0), total);
+  const stopped = /موقوف|وقف|اتوقف|ملغ/.test(c.status || '');
+  const state = stopped ? 'stopped' : today < start ? 'scheduled' : today > end ? 'ended' : 'active';
+  const budgetN = numOf(c.budget), budgetEGP = toEGP(budgetN, c.currency, settings);
+  const hasSpent = String(c.spent ?? '').trim() !== '';
+  // لو المصروف الفعلي مش متسجل: بنعتبر الميزانية كلها اتصرفت (أحوط، عشان العائد ميطلعش أكبر من الحقيقة)
+  const spentN = hasSpent ? numOf(c.spent) : state === 'scheduled' ? 0 : budgetN;
+  const spentEGP = toEGP(spentN, c.currency, settings);
+  const inc = incomes.filter(i => (c.id && i.campaignId === c.id) || (!i.campaignId && i.campaign === c.name));
+  const revenueEGP = inc.reduce((a, i) => a + i.amountEGP, 0);
+  const clients = new Set(inc.map(i => i.client).filter(Boolean)).size;
+  const byCountry = {};
+  inc.forEach(i => { const k = i.country || 'غير محدد'; byCountry[k] = (byCountry[k] || 0) + i.amountEGP; });
+  return {
+    ...c, sheet: 'campaigns', id: c.id || 'c-row' + c._row, rowId: 'k' + c._row,
+    startDate: start, endDate: end, totalDays: total, elapsed, daysLeft: Math.max(daysBetween(today, end), 0), state,
+    countriesList: String(c.countries || '').split(/[،,]\s*/).map(s => s.trim()).filter(Boolean),
+    budgetN, budgetEGP, spentN, spentEGP, spentEstimated: !hasSpent && state !== 'scheduled',
+    incomes: inc.sort((a, b) => (b.dateObj?.getTime() || 0) - (a.dateObj?.getTime() || 0)),
+    revenueEGP, profitEGP: revenueEGP - spentEGP, roi: spentEGP ? (revenueEGP - spentEGP) / spentEGP * 100 : null,
+    roas: spentEGP ? revenueEGP / spentEGP : null, clients, cpa: clients ? spentEGP / clients : null, byCountry,
+  };
+}
+
+export const CAMPAIGN_STATE = {
+  active:    { label: 'شغالة',   icon: 'radio',        tone: 'good' },
+  scheduled: { label: 'مجدولة',  icon: 'calendar-clock', tone: 'info' },
+  ended:     { label: 'خلصت',    icon: 'flag',         tone: 'muted' },
+  stopped:   { label: 'موقوفة',  icon: 'circle-pause', tone: 'warning' },
+};
 
 /* ─────────── محرك الأفكار الذكية ─────────── */
 // كل فكرة: { icon, tone: good|warning|critical|info, title, text, action?: {label, href} }
@@ -175,6 +344,26 @@ export function insights(projects, k, extras = {}) {
   if (extras.ads?.length) {
     const spend = sum(extras.ads, a => a.spend), sales = sum(extras.ads, a => a.sales);
     if (sales) out.push({ icon: 'target', tone: spend / sales < 0.35 ? 'good' : 'warning', title: `ACoS الإجمالي لحملات Amazon Ads: ${Math.round(spend / sales * 100)}%`, text: spend / sales < 0.35 ? 'أداء كويس — زوّد الميزانية على الكلمات اللي بتجيب طلبات وانقلها لحملة Exact.' : 'أعلى من المستهدف: وقّف الكلمات اللي ليها نقرات كتير ومفيش طلبات، وقلّل الـ bid 10–20% على الـ Auto.', action: { label: 'حملات الإعلانات', href: '#/ads' } });
+  }
+
+  const camps = extras.campaigns || [];
+  camps.filter(c => c.state === 'active' && c.elapsed / c.totalDays >= 0.5 && !c.revenueEGP).forEach(c => out.push({ icon: 'megaphone', tone: 'warning', title: `حملة "${c.name}" عدّت نص مدتها ومفيش إيراد متسجل منها`, text: 'لو جالك عملاء منها سجّلهم. لو مفيش فعلاً: غيّر الإعلان (فيديو قبل/بعد بيشتغل أحسن) أو الاستهداف قبل ما الميزانية تخلص.', action: { label: 'افتح الحملة', href: `#/campaign/${c.rowId}` } }));
+  const finished = camps.filter(c => (c.state === 'ended' || c.state === 'stopped') && c.spentEGP).sort((a, b) => a.endDate - b.endDate);
+  if (finished.length) {
+    const best = [...finished].sort((a, b) => b.roas - a.roas)[0];
+    out.push({ icon: 'trophy', tone: best.roas >= 1 ? 'good' : 'warning', title: `أحسن حملة إعلانية ليك: "${best.name}"`, text: `كل 1 جنيه صرفته فيها رجّعلك ${best.roas.toFixed(1)} جنيه (${best.countriesList.join('، ') || 'بدون دول محددة'} — ${best.platform || ''}). كرر نفس الإعلان والاستهداف في الحملة الجاية.`, action: { label: 'حملاتي الإعلانية', href: '#/campaigns' } });
+    if (finished.length >= 2) {
+      const [prev, last] = finished.slice(-2);
+      const g = prev.roas ? (last.roas - prev.roas) / prev.roas * 100 : null;
+      if (g != null) out.push({ icon: g >= 0 ? 'trending-up' : 'trending-down', tone: g >= 0 ? 'good' : 'warning', title: `آخر حملة ${g >= 0 ? 'أحسن' : 'أضعف'} من اللي قبلها بـ ${Math.abs(Math.round(g))}%`, text: `"${last.name}" رجّعت ${last.roas.toFixed(1)}x مقابل ${prev.roas.toFixed(1)}x في "${prev.name}". ${g >= 0 ? 'إعلاناتك بتتحسن.' : 'قارن الإعلانين: الدول، الفيديو، والميزانية — وارجع للي كان أحسن.'}` });
+    }
+  }
+
+  const subs = (extras.subs || []).filter(s => !s.cancelled);
+  if (subs.length) {
+    const monthly = subs.reduce((a, s) => a + s.monthlyEGP, 0);
+    const avgIncome = k.revPrev || k.revCur;
+    out.push({ icon: 'repeat', tone: avgIncome && monthly / avgIncome > 0.15 ? 'warning' : 'info', title: `بتدفع ≈ ${money(monthly)} في الشهر على ${subs.length} اشتراك`, text: `يعني ≈ ${money(monthly * 12)} في السنة${avgIncome ? `، وده ${Math.round(monthly / avgIncome * 100)}% من إيراد الشهر` : ''}. راجع الاشتراكات اللي مابتستخدمهاش كل شهر، والاشتراك السنوي غالبًا أرخص للبرامج اللي عمرك ما هتوقفها.`, action: { label: 'الاشتراكات', href: '#/money?t=subs' } });
   }
 
   const flagged = projects.filter(p => p.flags.length);
@@ -235,7 +424,7 @@ export function ideaOfTheDay(date = new Date()) {
 
 // بيطلع قايمة تذكيرات لكل يوم من النهارده لحد HORIZON يوم قدام (fireOn = يوم الإشعار)
 // الأبلكيشن بيبعت المستحق منها، والـ Service Worker بيقدر يبعتها حتى لو الأبلكيشن مقفول (على Chrome)
-export function reminders(projects, tasks, settings, horizon = 7) {
+export function reminders(projects, tasks, settings, extra = {}, horizon = 7) {
   const out = [];
   const today = startOfDay(), todayIso = isoDay(today);
   const nd = settings.notify;
@@ -269,6 +458,39 @@ export function reminders(projects, tasks, settings, horizon = 7) {
     if (t.days < 0) out.push({ ...base, id: `task-late-${t.id}-${t.due}`, fireOn: todayIso, tone: 'critical', title: `مهمة متأخرة: ${t.title}` });
     else if (t.days <= horizon) out.push({ ...base, id: `task-${t.id}-${t.due}`, fireOn: isoDay(t.dueDate), tone: 'warning', title: `مهمة النهارده: ${t.title}` });
   });
+
+  (extra.payments || []).filter(p => p.statusKey === 'pending').forEach(p => {
+    out.push({ id: `pay-${p.id}-${p.amount}`, fireOn: todayIso, kind: 'payment', icon: 'receipt-text', tone: 'warning', href: '#/payments', title: `تحويل مستني تأكيدك: ${p.client || 'عميل'}`, body: `${p.amount} ${p.currency || ''} — ${p.method || ''}. اتأكد إن الفلوس وصلت ودوس تأكيد.` });
+  });
+
+  (extra.campaigns || []).filter(c => c.state !== 'stopped').forEach(c => {
+    const href = `#/campaign/${c.rowId}`;
+    const lastDay = c.endDate, dayAfter = addDays(c.endDate, 1), dayBefore = addDays(c.endDate, -1);
+    if (dayBefore >= today && within(dayBefore) && c.totalDays > 1) out.push({ id: `camp-end1-${c.id}-${c.end}`, fireOn: isoDay(dayBefore), kind: 'campaign', icon: 'megaphone', tone: 'info', href, title: `حملة "${c.name}" بتخلص بكرة`, body: 'سجّل الإيرادات اللي جت منها عشان تعرف النتيجة الحقيقية.' });
+    if (lastDay >= today && within(lastDay)) out.push({ id: `camp-end0-${c.id}-${c.end}`, fireOn: isoDay(lastDay), kind: 'campaign', icon: 'megaphone', tone: 'info', href, title: `النهارده آخر يوم في حملة "${c.name}"`, body: 'سجّل المصروف الفعلي من مدير الإعلانات والإيرادات اللي جت منها.' });
+    if (dayAfter <= today && daysBetween(dayAfter, today) <= 2) out.push({ id: `camp-done-${c.id}-${c.end}`, fireOn: isoDay(dayAfter), kind: 'campaign', icon: 'flag', tone: c.profitEGP >= 0 ? 'good' : 'warning', href, title: `خلصت حملة "${c.name}"`, body: `صرفت ${fmt(c.spentEGP)} ج.م وجبت ${fmt(c.revenueEGP)} ج.م${c.roi != null ? ` (العائد ${pct(c.roi)})` : ''}.` });
+  });
+
+  (extra.subs || []).filter(s => s.next && s.daysToNext <= horizon).forEach(s => {
+    const money = `${s.price} ${s.currency || ''}`.trim();
+    const before = addDays(s.next, -1);
+    if (before >= today) out.push({ id: `sub-1-${s.id}-${isoDay(s.next)}`, fireOn: isoDay(before), kind: 'money', icon: 'repeat', tone: 'info', href: '#/money?t=subs', title: `اشتراك ${s.name} هيتجدد بكرة`, body: `${money}. لو مش محتاجه الشهر ده الغيه النهارده.` });
+    out.push({ id: `sub-0-${s.id}-${isoDay(s.next)}`, fireOn: isoDay(s.next), kind: 'money', icon: 'repeat', tone: 'info', href: '#/money?t=subs', title: `النهارده تجديد اشتراك ${s.name}`, body: `${money} — اتأكد إن الكارت فيه رصيد.` });
+  });
+
+  (extra.installments || []).filter(i => i.nextDue && !i.done).forEach(i => {
+    const money = `${i.monthly} ${i.currency || 'جنيه'}`;
+    if (i.daysToDue < 0) out.push({ id: `inst-late-${i.id}-${isoDay(i.nextDue)}-${Math.floor(-i.daysToDue / 3)}`, fireOn: todayIso, kind: 'money', icon: 'calendar-x', tone: 'critical', href: '#/money?t=inst', title: `قسط ${i.name} متأخر ${-i.daysToDue} يوم`, body: `${money}. لو دفعته دوس "دفعت" في صفحة الأقساط.` });
+    else if (i.daysToDue <= horizon) {
+      const before = addDays(i.nextDue, -2);
+      if (before >= today) out.push({ id: `inst-2-${i.id}-${isoDay(i.nextDue)}`, fireOn: isoDay(before), kind: 'money', icon: 'calendar-range', tone: 'warning', href: '#/money?t=inst', title: `قسط ${i.name} بعد يومين`, body: money });
+      out.push({ id: `inst-0-${i.id}-${isoDay(i.nextDue)}`, fireOn: isoDay(i.nextDue), kind: 'money', icon: 'calendar-range', tone: 'warning', href: '#/money?t=inst', title: `النهارده ميعاد قسط ${i.name}`, body: money });
+    }
+  });
+
+  // آخر يوم في الشهر: تذكير بتقفيل الشهر
+  const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+  if (daysBetween(today, lastDay) <= horizon) out.push({ id: `close-${monthKey(lastDay)}`, fireOn: isoDay(lastDay), kind: 'money', icon: 'calculator', tone: 'info', href: '#/money?t=close', title: `قفّل شهر ${monthName(lastDay)}`, body: 'شوف دخلك كام، وصرفت كام على الإعلانات والاشتراكات والأقساط والمصاريف، وفضلك كام.' });
 
   if (nd.dailyIdea) for (let i = 0; i <= horizon; i++) {
     const day = addDays(today, i), idea = ideaOfTheDay(day);

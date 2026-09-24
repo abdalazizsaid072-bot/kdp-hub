@@ -39,19 +39,35 @@ const CLIENT_FIELDS = [
 const EXTRA_SHEETS = {
   tasks:    { title: 'المهام',            headers: ['التاريخ', 'المهمة', 'العميل', 'الموعد', 'الأولوية', 'الحالة', 'ملاحظات'],
               keys:    ['date', 'title', 'client', 'due', 'priority', 'status', 'notes'] },
-  expenses: { title: 'المصروفات',         headers: ['التاريخ', 'البند', 'الفئة', 'المبلغ', 'ملاحظات'],
-              keys:    ['date', 'title', 'category', 'amount', 'notes'] },
+  expenses: { title: 'المصروفات',         headers: ['التاريخ', 'البند', 'الفئة', 'المبلغ', 'ملاحظات', 'النوع (شغل/شخصي)'],
+              keys:    ['date', 'title', 'category', 'amount', 'notes', 'kind'] },
+  subscriptions: { title: 'الاشتراكات',   headers: ['البرنامج', 'التصنيف', 'السعر', 'العملة', 'التجديد', 'تاريخ الدفع', 'الحالة', 'تاريخ الإلغاء', 'طريقة الدفع', 'ملاحظات'],
+              keys:    ['name', 'category', 'price', 'currency', 'cycle', 'start', 'status', 'cancelDate', 'method', 'notes'] },
+  installments: { title: 'الأقساط',       headers: ['القسط', 'المبلغ الكلي', 'القسط الشهري', 'عدد الشهور', 'تاريخ أول قسط', 'اتدفع كام قسط', 'آخر شهر اتدفع', 'العملة', 'الحالة', 'ملاحظات'],
+              keys:    ['name', 'total', 'monthly', 'months', 'start', 'paidCount', 'lastPaid', 'currency', 'status', 'notes'] },
+  otherIncome: { title: 'دخل إضافي',      headers: ['التاريخ', 'المصدر', 'المبلغ', 'العملة', 'ملاحظات'],
+              keys:    ['date', 'source', 'amount', 'currency', 'notes'] },
   ads:      { title: 'حملات Amazon Ads',  headers: ['التاريخ', 'الكتاب / العميل', 'الحملة', 'النوع', 'الإنفاق $', 'المبيعات $', 'الطلبات', 'النقرات', 'مرات الظهور', 'ملاحظات'],
               keys:    ['date', 'book', 'campaign', 'type', 'spend', 'sales', 'orders', 'clicks', 'impressions', 'notes'] },
   notes:    { title: 'ملاحظات وأفكار',    headers: ['التاريخ', 'العنوان', 'التصنيف', 'التفاصيل'],
               keys:    ['date', 'title', 'category', 'body'] },
+  payments: { title: 'المدفوعات',         headers: ['التاريخ', 'العميل', 'المشروع', 'رقم صف المشروع', 'المبلغ', 'العملة', 'طريقة الدفع', 'صورة التحويل', 'الحالة', 'اتسجل في حساب العميل', 'ملاحظات'],
+              keys:    ['date', 'client', 'project', 'projectRow', 'amount', 'currency', 'method', 'receipt', 'status', 'applied', 'notes'] },
+  campaigns: { title: 'حملاتي الإعلانية', headers: ['رقم الحملة', 'التاريخ', 'اسم الحملة', 'المنصة', 'الدول', 'تاريخ البداية', 'تاريخ النهاية', 'الميزانية', 'العملة', 'المصروف الفعلي', 'الحالة', 'ملاحظات'],
+              keys:    ['id', 'date', 'name', 'platform', 'countries', 'start', 'end', 'budget', 'currency', 'spent', 'status', 'notes'] },
+  campaignIncome: { title: 'إيرادات الحملات', headers: ['التاريخ', 'رقم الحملة', 'اسم الحملة', 'العميل', 'الدولة', 'المبلغ', 'العملة', 'ملاحظات'],
+              keys:    ['date', 'campaignId', 'campaign', 'client', 'country', 'amount', 'currency', 'notes'] },
 };
+
+// اسم الفولدر اللي بتتحفظ فيه صور التحويلات على جوجل درايف (بيتعمل جنب الشيت)
+const RECEIPTS_FOLDER = 'KDP Hub - صور التحويلات';
 
 /* ─────────── نقاط الاتصال ─────────── */
 
 function doGet(e) {
   return handle_(function () {
     checkKey_(e.parameter.key);
+    if (e.parameter.action === 'file') return readReceipt_(e.parameter.id);
     const out = { ok: true, updated: new Date().toISOString(), clients: readClients_() };
     Object.keys(EXTRA_SHEETS).forEach(function (k) { out[k] = readExtra_(k); });
     return out;
@@ -66,8 +82,14 @@ function doPost(e) {
     lock.waitLock(20000);
     try {
       const target = body.sheet === 'clients' ? clientsTarget_() : extraTarget_(body.sheet, true);
-      if (body.action === 'add')    return { ok: true, row: addRow_(target, body.values || {}) };
-      if (body.action === 'update') { verifyRow_(target, body.row, body.check); updateRow_(target, body.row, body.values || {}); return { ok: true }; }
+      // صورة التحويل بتتحفظ على درايف ولينكها بيتكتب في الشيت
+      if (body.file && body.file.b64) {
+        body.values = body.values || {};
+        body.values.receipt = saveReceipt_(body.file).url;
+      }
+      const receipt = body.values && body.values.receipt;
+      if (body.action === 'add')    return { ok: true, row: addRow_(target, body.values || {}), receipt: receipt };
+      if (body.action === 'update') { verifyRow_(target, body.row, body.check); updateRow_(target, body.row, body.values || {}); return { ok: true, receipt: receipt }; }
       if (body.action === 'delete') { verifyRow_(target, body.row, body.check); target.sheet.deleteRow(body.row); return { ok: true }; }
       throw new Error('عملية غير معروفة: ' + body.action);
     } finally {
@@ -124,6 +146,10 @@ function extraTarget_(name, create) {
     sh.getRange(1, 1, 1, def.headers.length).setValues([def.headers]).setFontWeight('bold').setBackground('#ede9fe');
     sh.setFrozenRows(1);
     sh.setRightToLeft(true);
+  } else if (create && sh.getLastColumn() < def.headers.length) {
+    // تاب قديم ناقصه أعمدة جديدة: بنضيف العناوين الناقصة على الشمال بس من غير ما نلمس البيانات
+    const have = Math.max(sh.getLastColumn(), 1);
+    sh.getRange(1, have + 1, 1, def.headers.length - have).setValues([def.headers.slice(have)]).setFontWeight('bold').setBackground('#ede9fe');
   }
   const colMap = {};
   def.keys.forEach(function (k, i) { colMap[k] = i + 1; });
@@ -205,6 +231,38 @@ function verifyRow_(t, row, check) {
   });
 }
 
+/* ─────────── صور التحويلات على جوجل درايف ─────────── */
+
+function receiptsFolder_() {
+  const props = PropertiesService.getScriptProperties();
+  const saved = props.getProperty('RECEIPTS_FOLDER_ID');
+  if (saved) { try { return DriveApp.getFolderById(saved); } catch (err) { /* الفولدر اتمسح — هنعمل واحد جديد */ } }
+  const parents = DriveApp.getFileById(SpreadsheetApp.getActiveSpreadsheet().getId()).getParents();
+  const parent = parents.hasNext() ? parents.next() : DriveApp.getRootFolder();
+  const folder = parent.createFolder(RECEIPTS_FOLDER);
+  props.setProperty('RECEIPTS_FOLDER_ID', folder.getId());
+  return folder;
+}
+
+function saveReceipt_(f) {
+  const name = f.name || ('تحويل-' + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd-HHmmss') + '.jpg');
+  const blob = Utilities.newBlob(Utilities.base64Decode(f.b64), f.mime || 'image/jpeg', name);
+  const file = receiptsFolder_().createFile(blob);
+  return { id: file.getId(), url: file.getUrl() };
+}
+
+// الأبلكيشن بيعرض الصورة من هنا — ومسموح بس بملفات فولدر التحويلات
+function readReceipt_(id) {
+  const file = DriveApp.getFileById(id);
+  const folderId = receiptsFolder_().getId();
+  const parents = file.getParents();
+  let inFolder = false;
+  while (parents.hasNext()) if (parents.next().getId() === folderId) inFolder = true;
+  if (!inFolder) throw new Error('الملف ده مش من صور التحويلات');
+  const blob = file.getBlob();
+  return { ok: true, mime: blob.getContentType(), b64: Utilities.base64Encode(blob.getBytes()) };
+}
+
 /* ─────────── ملخص يومي على الإيميل ─────────── */
 
 function setupDailyDigest() {
@@ -249,14 +307,16 @@ function dailyDigest() {
       else if (days <= 2) soon.push(r.name + ' — ' + (days === 0 ? 'النهارده' : 'بعد ' + days + ' يوم'));
     }
   });
+  const pendingPays = readExtra_('payments').filter(function (p) { return /انتظار/.test(p.status); });
   const lines = [
     'صباح الخير 👋 ده ملخص شغلك النهارده من KDP Hub:', '',
+    '🧾 تحويلات مستنية تأكيدك: ' + (pendingPays.length ? pendingPays.map(function (p) { return p.client + ' (' + p.amount + ' ' + p.currency + ')'; }).join('، ') : 'مفيش'),
     '⏰ تسليمات قريبة: ' + (soon.length ? '\n  • ' + soon.join('\n  • ') : 'مفيش'),
     '🚨 متأخرات: ' + (late.length ? '\n  • ' + late.join('\n  • ') : 'مفيش'),
     '💰 في انتظار العربون: ' + (waiting.length ? waiting.map(function (r) { return r.name; }).join('، ') : 'مفيش'),
     '📊 إجمالي المستحقات عند العملاء: ' + receivable.toLocaleString('en') + ' ج.م تقريباً', '',
     'افتح الأبلكيشن للتفاصيل والتحليلات.',
   ];
-  if (!soon.length && !late.length && !waiting.length) return; // مفيش جديد — مش هنزعجك
+  if (!soon.length && !late.length && !waiting.length && !pendingPays.length) return; // مفيش جديد — مش هنزعجك
   MailApp.sendEmail(Session.getEffectiveUser().getEmail(), 'KDP Hub — ملخص اليوم', lines.join('\n'));
 }

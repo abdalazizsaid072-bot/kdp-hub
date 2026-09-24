@@ -393,5 +393,41 @@ pre.msg { white-space: pre-wrap; background: var(--surface-2); border: 1px solid
 .steps li::before { content: counter(s); width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; flex-shrink: 0; background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 13px; }
 code { background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 1px 6px; font-size: 13px; direction: ltr; unicode-bidi: embed; }
 
+/* Receipts & payments */
+.thumb { width: 48px; height: 48px; border-radius: 12px; overflow: hidden; flex-shrink: 0; border: 1px solid var(--border); background: var(--surface-2); display: grid; place-items: center; padding: 0; cursor: zoom-in; color: var(--muted); }
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb img:not([src]), .pay-img img:not([src]) { visibility: hidden; }
+.thumb.empty { cursor: default; }
+.thumb.err, .pay-img.err { background: repeating-linear-gradient(135deg, var(--surface-2) 0 6px, var(--border) 6px 8px); }
+.drop { border: 2px dashed var(--border-strong); border-radius: 18px; min-height: 170px; display: grid; place-items: center; overflow: hidden; background: var(--surface-2); cursor: pointer; transition: border-color .15s, background .15s; }
+.drop:hover, .drop.over { border-color: var(--accent); background: var(--accent-soft); }
+.drop img { width: 100%; max-height: 340px; object-fit: contain; display: block; }
+.drop-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; padding: 20px; color: var(--text-2); }
+.drop-empty svg { width: 38px; height: 38px; color: var(--accent); }
+.pay-card { display: flex; flex-direction: column; gap: 12px; }
+.pay-img { height: 180px; border-radius: 14px; overflow: hidden; background: var(--surface-2); display: grid; place-items: center; cursor: zoom-in; border: 1px solid var(--border); color: var(--muted); }
+.pay-img.big { height: auto; max-height: 420px; }
+.pay-img img { width: 100%; height: 100%; object-fit: cover; }
+.pay-img.big img { object-fit: contain; max-height: 420px; }
+.lightbox { position: fixed; inset: 0; z-index: 80; background: rgba(5, 4, 15, .9); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 20px; animation: fade .2s; color: #fff; }
+.lightbox img { max-width: 100%; max-height: 80vh; border-radius: 12px; box-shadow: 0 20px 60px rgba(0, 0, 0, .6); }
+.kv.kv3 { grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0; }
+.kv.kv3 > div { padding: 8px 10px; }
+.kv.kv3 b { font-size: 14px; }
+
+/* Money / month close */
+.stackbar { display: flex; gap: 2px; height: 22px; border-radius: 8px; overflow: hidden; background: var(--surface-2); }
+.stackbar > span { display: block; height: 100%; min-width: 3px; }
+.stackbar > span:first-child { border-radius: 0 8px 8px 0; }
+.stackbar > span:last-child { border-radius: 8px 0 0 8px; }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+.money-details { border: 1px solid var(--border); border-radius: 14px; background: var(--surface-2); }
+.money-details > summary, .money-details.empty-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 14px; cursor: pointer; list-style: none; }
+.money-details.empty-row { cursor: default; }
+.money-details > summary::-webkit-details-marker { display: none; }
+.money-details[open] > summary { border-bottom: 1px solid var(--border); }
+.money-details .list { padding: 4px 10px; }
+.money-details .list-item { padding: 8px 4px; }
+
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 @media (forced-colors: active) { .progress > span, .hbar .track span { background: Highlight; } }

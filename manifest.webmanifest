@@ -13,6 +13,16 @@
   "background_color": "#0b0a17",
   "theme_color": "#0b0a17",
   "categories": ["business", "productivity", "finance"],
+  "share_target": {
+    "action": "./share-receipt",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "files": [{ "name": "receipt", "accept": ["image/*"] }]
+    }
+  },
   "icons": [
     { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
     { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
@@ -21,6 +31,8 @@
   ],
   "shortcuts": [
     { "name": "عميل جديد", "url": "./#/projects", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "صورة تحويل", "url": "./#/payments", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "حملاتي الإعلانية", "url": "./#/campaigns", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
     { "name": "عرض سعر", "url": "./#/tools?t=quote", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
     { "name": "التحليلات", "url": "./#/analytics", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] }
   ]

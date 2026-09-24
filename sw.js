@@ -1,5 +1,5 @@
 // KDP Hub Service Worker — تشغيل بدون نت + إشعارات في الخلفية
-const CACHE = 'kdphub-v2';
+const CACHE = 'kdphub-v4';
 const SHELL = ['./', 'index.html', 'styles.css', 'js/app.js', 'js/data.js', 'js/insights.js', 'js/templates.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/badge-96.png'];
 
 self.addEventListener('install', e => {
@@ -7,11 +7,28 @@ self.addEventListener('install', e => {
 });
 
 self.addEventListener('activate', e => {
-  e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim()));
+  e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE && k !== 'kdphub-share').map(k => caches.delete(k)))).then(() => self.clients.claim()));
 });
 
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
+
+  // صورة تحويل اتشاركت من واتساب (أو أي أبلكيشن) لـ KDP Hub
+  if (e.request.method === 'POST' && url.pathname.endsWith('/share-receipt')) {
+    e.respondWith((async () => {
+      try {
+        const form = await e.request.formData();
+        const file = form.getAll('receipt').find(f => f && f.type && f.type.startsWith('image/'));
+        if (file) {
+          const cache = await caches.open('kdphub-share');
+          await cache.put('shared-receipt', new Response(file, { headers: { 'content-type': file.type } }));
+        }
+      } catch (err) { /* هنفتح الأبلكيشن عادي */ }
+      return Response.redirect(new URL('./#/payments?shared=1', self.registration.scope).href, 303);
+    })());
+    return;
+  }
+
   if (e.request.method !== 'GET') return;
   // بيانات الشيت دايماً من النت (الأبلكيشن نفسه بيحتفظ بآخر نسخة)
   if (/script\.google(usercontent)?\.com$/.test(url.hostname)) return;

@@ -12,13 +12,15 @@ const sum = (a, f) => a.reduce((s, x) => s + (f(x) || 0), 0);
 const FONT = "'IBM Plex Sans Arabic', system-ui, sans-serif", FONT_HEAD = "'Cairo', system-ui, sans-serif";
 const LABELS = { clients: 'عميل / مشروع', tasks: 'مهمة', expenses: 'مصروف', ads: 'حملة إعلانية', notes: 'ملاحظة' };
 const SHEET_ICONS = { clients: 'user-plus', tasks: 'square-check', expenses: 'receipt', ads: 'target', notes: 'notebook-pen' };
+LABELS.payments = 'تحويل'; LABELS.campaigns = 'حملة إعلانية'; LABELS.campaignIncome = 'إيراد حملة'; LABELS.subscriptions = 'اشتراك'; LABELS.installments = 'قسط'; LABELS.otherIncome = 'دخل';
+Object.assign(SHEET_ICONS, { subscriptions: 'repeat', installments: 'calendar-range', otherIncome: 'hand-coins' });
 
 const S = {
   settings: D.loadSettings(),
   raw: null, source: 'local', syncing: false, error: null, lastSync: D.LS.get('lastSync', null),
-  projects: [], tasks: [], expenses: [], ads: [], notes: [], k: null, reminders: [],
+  projects: [], tasks: [], expenses: [], ads: [], notes: [], payments: [], campaigns: [], incomes: [], subscriptions: [], installments: [], otherIncome: [], k: null, reminders: [],
   charts: [], route: { name: 'home', params: new URLSearchParams() },
-  pf: { f: 'all', q: '', svc: '', sort: 'recent' }, aPeriod: '6', ideasTab: 'smart', toolTab: 'quote', quoteMkt: 'EG', qDaysTouched: false,
+  pf: { f: 'all', q: '', svc: '', sort: 'recent' }, aPeriod: '6', ideasTab: 'smart', toolTab: 'quote', quoteMkt: 'EG', qDaysTouched: false, moneyTab: 'close', closeMonth: null, incomeMode: D.LS.get('incomeMode', 'auto'),
   queue: D.LS.get('queue', []), installPrompt: null,
 };
 const hasRemote = () => !!(S.settings.url && S.settings.key);
@@ -46,8 +48,18 @@ function boot() {
   $('#bellBtn').onclick = openNotificationCenter;
   $('#addBtn').onclick = () => {
     const map = { tasks: 'tasks', expenses: 'expenses', ads: 'ads', notes: 'notes' };
-    map[S.route.name] ? openForm(map[S.route.name]) : openQuickAdd();
+    if (S.route.name === 'payments') openPaymentForm();
+    else if (S.route.name === 'campaigns') openCampaignForm();
+    else if (S.route.name === 'money' && S.moneyTab !== 'close') openForm({ subs: 'subscriptions', inst: 'installments', expenses: 'expenses', income: 'otherIncome' }[S.moneyTab]);
+    else map[S.route.name] ? openForm(map[S.route.name]) : openQuickAdd();
   };
+  // لصق صورة تحويل (Ctrl+V) من واتساب ويب أو أي مكان
+  document.addEventListener('paste', e => {
+    const file = [...(e.clipboardData?.files || [])].find(f => f.type.startsWith('image/'));
+    if (!file || /INPUT|TEXTAREA/.test(document.activeElement?.tagName) && !S.receiptDraft) return;
+    e.preventDefault();
+    if (S.receiptDraft) setReceiptDraft(file); else openPaymentForm(null, { file });
+  });
   $('#sheetBackdrop').onclick = () => closeSheet();
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSheet(); });
 }
@@ -71,8 +83,14 @@ function processData() {
   S.expenses = (r.expenses || []).map(e => I.enrichExpense(e, st));
   S.ads = (r.ads || []).map(I.enrichAd);
   S.notes = (r.notes || []).map(n => ({ ...n, sheet: 'notes', id: 'n' + n._row, dateObj: D.parseDate(n.date) }));
+  S.payments = (r.payments || []).map(p => I.enrichPayment(p, st));
+  S.incomes = (r.campaignIncome || []).map(x => I.enrichIncome(x, st));
+  S.campaigns = (r.campaigns || []).map(c => I.enrichCampaign(c, S.incomes, st));
+  S.subscriptions = (r.subscriptions || []).map(s => I.enrichSub(s, st));
+  S.installments = (r.installments || []).map(i => I.enrichInstallment(i, st));
+  S.otherIncome = (r.otherIncome || []).map(x => I.enrichOtherIncome(x, st));
   S.k = I.kpis(S.projects, S.expenses);
-  S.reminders = I.reminders(S.projects, S.tasks, st);
+  S.reminders = I.reminders(S.projects, S.tasks, st, { payments: S.payments, campaigns: S.campaigns, subs: S.subscriptions, installments: S.installments });
   updateBadges();
   idbSet('reminders', S.reminders);
 }
@@ -87,6 +105,10 @@ function updateBadges() {
   $$('[data-count="projects"]').forEach(el => { el.textContent = late; el.hidden = !late; });
   const tasksDue = S.tasks.filter(t => !t.done && t.dueDate && t.days <= 0).length;
   $$('[data-count="tasks"]').forEach(el => { el.textContent = tasksDue; el.hidden = !tasksDue; });
+  const pend = S.payments.filter(p => p.statusKey === 'pending').length;
+  $$('[data-count="payments"]').forEach(el => { el.textContent = pend; el.hidden = !pend; });
+  const live = S.campaigns.filter(c => c.state === 'active').length;
+  $$('[data-count="campaigns"]').forEach(el => { el.textContent = live; el.hidden = !live; el.style.background = 'var(--good)'; });
   const foot = $('#sideFoot');
   if (foot) foot.innerHTML = `${ic(S.source === 'live' ? 'cloud' : S.source === 'local' ? 'flask-conical' : 'cloud-off')} ${sourceLabel()}`;
   paint();
@@ -138,8 +160,10 @@ function applyLocal(sheet, action, row, values) {
   if (action === 'delete') S.raw[sheet] = list.filter(x => x._row !== row);
 }
 
-async function save(sheet, action, row, values, check) {
+// file (اختياري) = صورة تحويل مضغوطة { b64, mime, name, dataUrl }
+async function save(sheet, action, row, values, check, file = null) {
   if (!hasRemote()) {
+    if (file) { const key = 'rcpt-local-' + Date.now(); await idbSet(key, file.dataUrl); values = { ...values, receipt: 'local:' + key }; }
     applyLocal(sheet, action, row, values);
     D.LS.set('local', S.raw);
     processData(); renderView(true);
@@ -147,7 +171,9 @@ async function save(sheet, action, row, values, check) {
     return true;
   }
   const payload = { sheet, action, row, values, check };
+  if (file) payload.file = { b64: file.b64, mime: file.mime, name: file.name };
   if (!navigator.onLine) {
+    if (file) { toast('رفع صورة التحويل محتاج إنترنت', 'err'); return false; }
     if (action !== 'add') { toast('التعديل محتاج إنترنت', 'err'); return false; }
     S.queue.push(payload); D.LS.set('queue', S.queue);
     applyLocal(sheet, action, row, values); processData(); renderView(true);
@@ -156,7 +182,8 @@ async function save(sheet, action, row, values, check) {
   }
   try {
     $('#syncBtn').classList.add('spin');
-    await D.postRemote(S.settings, payload);
+    const res = await D.postRemote(S.settings, payload);
+    if (res.receipt) { values = { ...values, receipt: res.receipt }; const id = driveId(res.receipt); if (id && file) idbSet('rcpt:' + id, file.dataUrl); }
     toast(action === 'delete' ? 'اتمسح من الشيت' : 'اتحفظ في الشيت ✓', 'ok');
     applyLocal(sheet, action, row, values); processData(); renderView(true);
     sync(true);
@@ -167,21 +194,24 @@ async function save(sheet, action, row, values, check) {
   } finally { $('#syncBtn').classList.remove('spin'); }
 }
 
-const checkFor = (sheet, item) => sheet === 'clients' ? { name: item.name } : sheet === 'ads' ? { book: item.book } : { title: item.title };
+const checkFor = (sheet, item) => ({ clients: { name: item.name }, ads: { book: item.book }, payments: { client: item.client }, campaigns: { name: item.name }, campaignIncome: { campaignId: item.campaignId }, subscriptions: { name: item.name }, installments: { name: item.name }, otherIncome: { source: item.source } })[sheet] || { title: item.title };
+const driveId = url => String(url || '').match(/[-\w]{25,}/)?.[0] || '';
 
 /* ═════════════ التنقل ═════════════ */
 
 const NAV = [
-  { items: [['home', 'الرئيسية', 'layout-dashboard'], ['projects', 'المشاريع والعملاء', 'folder-kanban'], ['analytics', 'التحليلات', 'chart-column'], ['ideas', 'الأفكار والنمو', 'lightbulb']] },
-  { group: 'الشغل', items: [['tasks', 'المهام', 'list-checks'], ['ads', 'Amazon Ads', 'target'], ['expenses', 'المصروفات', 'receipt'], ['notes', 'ملاحظاتي', 'notebook-pen'], ['tools', 'الأدوات والحاسبات', 'calculator']] },
+  { items: [['home', 'الرئيسية', 'layout-dashboard'], ['projects', 'المشاريع والعملاء', 'folder-kanban'], ['payments', 'التحويلات والمدفوعات', 'credit-card'], ['analytics', 'التحليلات', 'chart-column'], ['ideas', 'الأفكار والنمو', 'lightbulb']] },
+  { group: 'الشغل', items: [['campaigns', 'حملاتي الإعلانية', 'megaphone'], ['money', 'الفلوس والمصاريف', 'wallet'], ['tasks', 'المهام', 'list-checks'], ['ads', 'Amazon Ads (كتب العملاء)', 'target'], ['notes', 'ملاحظاتي', 'notebook-pen'], ['tools', 'الأدوات والرسائل', 'calculator']] },
   { group: 'النظام', items: [['settings', 'الإعدادات', 'settings'], ['setup', 'دليل الربط والتثبيت', 'book-open-check']] },
 ];
-const BOTTOM = [['home', 'الرئيسية', 'layout-dashboard'], ['projects', 'المشاريع', 'folder-kanban'], ['analytics', 'التحليلات', 'chart-column'], ['ideas', 'الأفكار', 'lightbulb'], ['more', 'المزيد', 'layout-grid']];
+const BOTTOM = [['home', 'الرئيسية', 'layout-dashboard'], ['projects', 'المشاريع', 'folder-kanban'], ['payments', 'التحويلات', 'credit-card'], ['campaigns', 'حملاتي', 'megaphone'], ['more', 'المزيد', 'layout-grid']];
+const COUNTED = ['projects', 'tasks', 'payments', 'campaigns'];
 
 function buildNav() {
+  const badge = k => COUNTED.includes(k) ? `<span class="count" data-count="${k}" hidden></span>` : '';
   $('#sideNav').innerHTML = NAV.map(g => (g.group ? `<div class="nav-group">${g.group}</div>` : '') +
-    g.items.map(([k, l, i]) => `<a class="nav-link" data-nav="${k}" href="#/${k}">${ic(i)}<span>${l}</span>${k === 'projects' || k === 'tasks' ? `<span class="count" data-count="${k}" hidden></span>` : ''}</a>`).join('')).join('');
-  $('#bottomNav').innerHTML = BOTTOM.map(([k, l, i]) => `<a data-nav="${k}" href="#/${k}">${ic(i)}<span>${l}</span>${k === 'projects' ? `<span class="count" data-count="projects" hidden></span>` : ''}</a>`).join('');
+    g.items.map(([k, l, i]) => `<a class="nav-link" data-nav="${k}" href="#/${k}">${ic(i)}<span>${l}</span>${badge(k)}</a>`).join('')).join('');
+  $('#bottomNav').innerHTML = BOTTOM.map(([k, l, i]) => `<a data-nav="${k}" href="#/${k}">${ic(i)}<span>${l}</span>${badge(k)}</a>`).join('');
 }
 
 function parseHash() {
@@ -198,9 +228,16 @@ function route() {
     renderView(); openProject(r.arg);
     return;
   }
+  if (r.name === 'campaign') {
+    S.route = { name: 'campaigns', params: new URLSearchParams() };
+    renderView(); openCampaign(r.arg);
+    return;
+  }
   if (!VIEWS[r.name]) r.name = 'home';
   if (r.name === 'projects' && r.params.get('f')) S.pf.f = r.params.get('f');
   if (r.name === 'tools' && r.params.get('t')) S.toolTab = r.params.get('t');
+  if (r.name === 'expenses') { r.name = 'money'; S.moneyTab = 'expenses'; }
+  if (r.name === 'money' && r.params.get('t')) S.moneyTab = r.params.get('t');
   S.route = r;
   closeSheet(true);
   renderView();
@@ -214,7 +251,7 @@ function renderView(keepScroll = false) {
   $('#topTitle').innerHTML = `<h1>${v.title()}</h1><p>${v.sub ? v.sub() : ''}</p>`;
   $('#banner').innerHTML = ['settings', 'setup'].includes(S.route.name) ? '' : bannerHTML();
   $('#view').innerHTML = v.render(S.route);
-  const active = ['tasks', 'ads', 'expenses', 'notes', 'tools', 'settings', 'setup'].includes(S.route.name) ? 'more' : S.route.name;
+  const active = ['tasks', 'ads', 'expenses', 'money', 'notes', 'tools', 'settings', 'setup', 'ideas', 'analytics'].includes(S.route.name) ? 'more' : S.route.name;
   $$('[data-nav]').forEach(a => a.classList.toggle('active', a.dataset.nav === S.route.name || (a.closest('#bottomNav') && a.dataset.nav === active)));
   paint();
   v.after?.(S.route);
@@ -360,7 +397,7 @@ VIEWS.home = {
     const tv = trendVerdict();
     const week = up.filter(x => x.days >= 0 && x.days <= 7).length, late = up.filter(x => x.days < 0).length;
     const hour = new Date().getHours();
-    const ins = I.insights(S.projects, k, { ads: S.ads }).slice(0, 4);
+    const ins = I.insights(S.projects, k, { ads: S.ads, campaigns: S.campaigns, subs: S.subscriptions }).slice(0, 4);
     const mix = I.serviceMix(S.projects).slice(0, 6), maxMix = Math.max(1, ...mix.map(m => m.revenue));
     return `${installHintHTML()}
     <div class="hero">
@@ -378,6 +415,7 @@ VIEWS.home = {
       ${kpi({ icon: 'wallet', cls: 'i3', label: 'مستحقات عند العملاء', value: I.fmt(k.receivables), unit: 'ج.م', foot: `<a href="#/projects?f=owing" style="color:var(--accent)">عرض التفاصيل ←</a>` })}
       ${kpi({ icon: 'rocket', cls: 'i4', label: 'فرص في الطريق', value: I.fmt(k.pipelineValue), unit: 'ج.م', foot: `${k.leads.length} قيد التفكير · ${k.waiting.length} انتظار عربون` })}
     </div>
+    ${homeLiveCards()}
     <div class="grid g-main" style="margin-top:16px">
       <div class="card">
         <div class="card-head"><h3>${ic('chart-column')} الإيراد آخر 6 شهور</h3>${legend([['محصّل', '--s1'], ['متبقي', '--s2']])}</div>
@@ -488,6 +526,7 @@ function openProject(id) {
   S.openProjectId = id;
   const days = p.deadlineDate ? D.daysBetween(today0(), p.deadlineDate) : null;
   const others = S.projects.filter(x => x.clientId === p.clientId && x.id !== p.id);
+  const pays = S.payments.filter(x => x.projectRowN === p._row || (!x.projectRowN && D.cleanName(x.client) === p.displayName));
   const clientTotal = sum([p, ...others].filter(x => !x.isLead), x => x.totalEGP);
   const wa = kind => I.waLink(p, kind);
   openSheet({
@@ -517,14 +556,18 @@ function openProject(id) {
       </div>` : '<p class="muted small">ضيف رقم العميل عشان تبعتله واتساب بضغطة.</p>'}
       <h4 style="margin:18px 0 8px">${ic('activity')} غيّر الحالة بسرعة</h4>
       <div class="chips" style="flex-wrap:wrap">${D.STATUS_PRESETS.map(s => `<button class="chip ${String(p.status).trim() === s ? 'on' : ''}" data-status="${esc(s)}">${esc(s)}</button>`).join('')}</div>
+      ${pays.length ? `<h4 style="margin:18px 0 8px">${ic('credit-card')} التحويلات</h4><div class="list">${pays.map(paymentRow).join('')}</div>` : ''}
       ${others.length ? `<h4 style="margin:18px 0 8px">${ic('history')} مشاريع تانية لنفس العميل</h4><div class="list">${others.map(o => `<div class="list-item" data-open="${o.id}"><div class="li-body"><div class="li-title">${esc(I.short(o.project, 60))}</div><div class="li-sub">${fmtDate(o.date)}</div></div><div class="li-end"><b>${origMoney(o, o.totalEGP)}</b>${statusBadge(o)}</div></div>`).join('')}</div>` : ''}
     `,
     foot: `<button class="btn primary" id="pEdit">${ic('pencil')} تعديل</button>
+      <button class="btn" id="pRcpt">${ic('receipt-text')} صورة تحويل</button>
       ${p.totalEGP && p.remainingEGP > 0 ? `<button class="btn" id="pPay">${ic('hand-coins')} سجّل دفعة</button>` : ''}
       <button class="btn danger" id="pDel" style="margin-inline-start:auto">${ic('trash-2')} حذف</button>`,
   });
   $('#pEdit').onclick = () => openForm('clients', p);
+  $('#pRcpt').onclick = () => openPaymentForm(null, { project: p });
   $('#pPay') && ($('#pPay').onclick = () => openPayment(p));
+  loadThumbs();
   $('#pDel').onclick = () => confirmDelete('clients', p);
   $$('[data-status]').forEach(b => b.onclick = async () => {
     const ok = await save('clients', 'update', p._row, { status: b.dataset.status }, checkFor('clients', p));
@@ -545,12 +588,17 @@ function openPayment(p) {
   $('#paySave').onclick = async () => {
     const amt = Number(D.toLatin($('#payAmt').value).replace(/[^\d.]/g, ''));
     if (!amt) return toast('اكتب المبلغ', 'err');
-    const paid = Math.round(p.paidEGP / p.rate) + amt, rem = Math.max(p.totalRaw - paid, 0);
-    const suffix = p.currency === 'SAR' ? ' ريال' : '';
-    const values = { deposit: paid + suffix, remaining: rem === 0 ? 'خالص' : rem + suffix };
-    if (p.statusKey === 'waiting') values.status = 'قيد العمل';
-    if (await save('clients', 'update', p._row, values, checkFor('clients', p))) closeSheet();
+    if (await save('clients', 'update', p._row, paymentValues(p, amt), checkFor('clients', p))) closeSheet();
   };
+}
+
+// الخانات اللي بتتغير في صف المشروع لما مبلغ يوصل (بعملة المشروع نفسه)
+function paymentValues(p, amt) {
+  const paid = Math.round(p.paidEGP / p.rate) + amt, rem = Math.max(p.totalRaw - paid, 0);
+  const suffix = p.currency === 'SAR' ? ' ريال' : '';
+  const values = { deposit: paid + suffix, remaining: rem === 0 ? 'خالص' : rem + suffix };
+  if (p.statusKey === 'waiting' || p.isLead) values.status = 'قيد العمل';
+  return values;
 }
 
 async function confirmDelete(sheet, item) {
@@ -584,7 +632,7 @@ VIEWS.analytics = {
       const prevRev = sum(S.projects.filter(p => p.date && !p.isLead && prevSet.has(D.monthKey(p.date))), p => p.totalEGP);
       prevG = prevRev ? (rev - prevRev) / prevRev * 100 : null;
     }
-    const exp = sum(S.expenses.filter(e => e.dateObj && set.has(D.monthKey(e.dateObj))), e => e.amountEGP);
+    const exp = sum(S.expenses.filter(e => e.kindKey !== 'personal' && e.dateObj && set.has(D.monthKey(e.dateObj))), e => e.amountEGP);
     const groups = I.groupBy(bill, p => p.clientId), clients = Object.keys(groups).length, repeat = Object.values(groups).filter(g => g.length > 1).length;
     const rows = I.monthly(S.projects, months, S.expenses);
     const statuses = I.statusMix(ps), maxSt = Math.max(1, ...statuses.map(s => s.count));
@@ -675,7 +723,7 @@ VIEWS.ideas = {
     const tab = S.ideasTab, done = D.LS.get('ideasDone', {}), wk = weekKey(), planDone = D.LS.get('plan-' + wk, {});
     const tabs = `<div class="seg" id="itabs" style="margin-bottom:16px">${[['smart', 'من بياناتك'], ['plan', 'خطة الأسبوع'], ['library', 'مكتبة الأفكار']].map(([v, l]) => `<button class="${tab === v ? 'on' : ''}" data-v="${v}">${l}</button>`).join('')}</div>`;
     if (tab === 'smart') {
-      const ins = I.insights(S.projects, S.k, { ads: S.ads });
+      const ins = I.insights(S.projects, S.k, { ads: S.ads, campaigns: S.campaigns, subs: S.subscriptions });
       return tabs + `<div class="grid g-2">${ins.map(insightCard).join('') || emptyState('sparkles', 'لسه مفيش أفكار', 'ضيف بيانات أكتر في الشيت.')}</div>`;
     }
     if (tab === 'plan') {
@@ -725,35 +773,205 @@ VIEWS.tasks = {
 };
 
 /* ── المصروفات ── */
+const addExpenseBtns = `<div class="row"><button class="btn primary sm" data-add="expenses" data-kind="شغل">${ic('briefcase')} مصروف شغل</button><button class="btn sm" data-add="expenses" data-kind="شخصي">${ic('user')} مصروف شخصي</button></div>`;
+
 VIEWS.expenses = {
   title: () => 'المصروفات',
-  sub: () => 'عشان تعرف صافي ربحك الحقيقي',
+  sub: () => 'مصاريف الشغل والمصاريف الشخصية',
   render() {
-    if (!S.expenses.length) return emptyState('receipt', 'مفيش مصروفات متسجلة', 'سجّل اشتراكاتك (Canva، Adobe…)، الإعلانات، والفريلانسرز — والتحليلات هتحسبلك صافي الربح.', `<button class="btn primary" data-add="expenses">${ic('plus')} مصروف جديد</button>`);
+    const note = `<p class="muted small" style="margin:0 0 14px">${ic('info')} الاشتراكات والأقساط وصرف الحملات الإعلانية بيتحسبوا لوحدهم في تقفيل الشهر، فمتسجلهمش هنا تاني.</p>`;
+    if (!S.expenses.length) return note + emptyState('receipt', 'مفيش مصروفات متسجلة', 'سجّل مصاريف الشغل (فريلانسرز، إنترنت، أدوات) والمصاريف الشخصية (بيت، مواصلات، أكل) عشان تعرف فلوسك راحت فين آخر الشهر.', addExpenseBtns);
     const mk = D.monthKey(new Date());
     const cur = S.expenses.filter(e => e.dateObj && D.monthKey(e.dateObj) === mk);
-    const cats = Object.entries(I.groupBy(S.expenses, e => e.category || 'أخرى')).map(([c, es]) => [c, sum(es, e => e.amountEGP)]).sort((a, b) => b[1] - a[1]);
+    const work = cur.filter(e => e.kindKey === 'work'), personal = cur.filter(e => e.kindKey === 'personal');
+    const cats = Object.entries(I.groupBy(cur.length ? cur : S.expenses, e => e.category || 'أخرى')).map(([c, es]) => [c, sum(es, e => e.amountEGP), es[0].kindKey]).sort((a, b) => b[1] - a[1]);
     const max = Math.max(1, ...cats.map(c => c[1]));
-    const list = [...S.expenses].sort((a, b) => (b.dateObj?.getTime() || 0) - (a.dateObj?.getTime() || 0));
-    return `<div class="grid g-3">
-      ${kpi({ icon: 'calendar', cls: 'i3', label: 'مصروفات الشهر ده', value: I.fmt(sum(cur, e => e.amountEGP)), unit: 'ج.م', foot: `صافي الشهر: ${I.money(S.k.revCur - sum(cur, e => e.amountEGP))}` })}
-      ${kpi({ icon: 'sigma', cls: 'i1', label: 'إجمالي المصروفات', value: I.fmt(sum(S.expenses, e => e.amountEGP)), unit: 'ج.م' })}
-      ${kpi({ icon: 'tag', cls: 'i4', label: 'أكبر بند', value: esc(cats[0]?.[0] || '—'), foot: cats[0] ? I.money(cats[0][1]) : '' })}
+    const list = [...S.expenses].sort((a, b) => (b.dateObj?.getTime() || 0) - (a.dateObj?.getTime() || 0) || b._row - a._row);
+    return `<div class="row between" style="margin-bottom:14px">${addExpenseBtns}</div>${note}
+    <div class="grid g-3">
+      ${kpi({ icon: 'briefcase', cls: 'i1', label: `مصاريف الشغل في ${I.monthName(new Date())}`, value: I.fmt(sum(work, e => e.amountEGP)), unit: 'ج.م', foot: `${work.length} بند` })}
+      ${kpi({ icon: 'user', cls: 'i4', label: `مصاريف شخصية في ${I.monthName(new Date())}`, value: I.fmt(sum(personal, e => e.amountEGP)), unit: 'ج.م', foot: `${personal.length} بند` })}
+      ${kpi({ icon: 'tag', cls: 'i3', label: 'أكبر بند الشهر ده', value: esc(cats[0]?.[0] || '—'), foot: cats[0] ? I.money(cats[0][1]) : '' })}
     </div>
     <div class="grid g-main" style="margin-top:16px">
-      <div class="card"><div class="card-head"><h3>${ic('chart-column')} الإيراد مقابل المصروفات</h3>${legend([['الإيراد', '--s1'], ['المصروفات', '--s2']])}</div><div class="chart-box"><canvas id="eChart"></canvas></div></div>
-      <div class="card"><div class="card-head"><h3>${ic('tags')} حسب الفئة</h3></div>${cats.map(([c, v]) => `<div class="hbar"><span>${esc(c)}</span><div class="track"><span style="width:${v / max * 100}%;background:var(--s2)"></span></div><b class="num small">${I.fmt(v)}</b></div>`).join('')}</div>
+      <div class="card"><div class="card-head"><h3>${ic('chart-column')} المصاريف كل شهر</h3>${legend([['شغل', '--s1'], ['شخصي', '--s5']])}</div><div class="chart-box"><canvas id="eChart" aria-label="مصاريف الشغل والمصاريف الشخصية كل شهر"></canvas></div></div>
+      <div class="card"><div class="card-head"><h3>${ic('tags')} حسب الفئة</h3><span class="sub">${cur.length ? 'الشهر ده' : 'الكل'}</span></div>${cats.map(([c, v, k]) => `<div class="hbar"><span>${esc(c)}</span><div class="track"><span style="width:${v / max * 100}%;background:var(${k === 'personal' ? '--s5' : '--s1'})"></span></div><b class="num small">${I.fmt(v)}</b></div>`).join('')}</div>
     </div>
-    <div class="card" style="margin-top:16px"><div class="list">${list.map(e => `<div class="list-item" data-edit="expenses:${e.id}"><div class="avatar" style="background:linear-gradient(135deg,#f59e0b,#f97316)">${ic('receipt')}</div>
-      <div class="li-body"><div class="li-title">${esc(e.title)}</div><div class="li-sub">${esc(e.category || '')} · ${fmtDate(e.dateObj) || esc(e.date)}</div></div><div class="li-end"><b>${esc(e.amount)}</b></div></div>`).join('')}</div></div>`;
+    <div class="card" style="margin-top:16px"><div class="list">${list.map(e => `<div class="list-item" data-edit="expenses:${e.id}"><div class="avatar" style="background:linear-gradient(135deg,${e.kindKey === 'personal' ? '#ec4899,#8b5cf6' : '#f59e0b,#f97316'})">${ic(e.kindKey === 'personal' ? 'user' : 'briefcase')}</div>
+      <div class="li-body"><div class="li-title">${esc(e.title)}</div><div class="li-sub">${e.kindKey === 'personal' ? 'شخصي' : 'شغل'} · ${esc(e.category || '')} · ${fmtDate(e.dateObj) || esc(e.date)}</div></div><div class="li-end"><b>${esc(e.amount)}</b></div></div>`).join('')}</div></div>`;
   },
   after() {
-    if (!S.expenses.length) return;
-    const rows = I.monthly(S.projects, I.lastMonths(6), S.expenses), c = colors();
-    mkChart('eChart', { type: 'bar', data: { labels: rows.map(r => r.label), datasets: [
-      { label: 'الإيراد', data: rows.map(r => r.revenue), backgroundColor: c.s1, borderRadius: 4, borderSkipped: 'start', maxBarThickness: 22 },
-      { label: 'المصروفات', data: rows.map(r => r.expenses), backgroundColor: c.s2, borderRadius: 4, borderSkipped: 'start', maxBarThickness: 22 },
-    ] }, options: baseOpts() });
+    if (!S.expenses.length || !$('#eChart')) return;
+    const months = I.lastMonths(6), c = colors();
+    const byKind = k => months.map(m => Math.round(sum(S.expenses.filter(e => e.kindKey === k && e.dateObj && D.monthKey(e.dateObj) === m), e => e.amountEGP)));
+    mkChart('eChart', { type: 'bar', data: { labels: months.map(I.monthLabel), datasets: [
+      { label: 'شغل', data: byKind('work'), backgroundColor: c.s1, stack: 'a', borderWidth: { top: 2 }, borderColor: c.surface, maxBarThickness: 36 },
+      { label: 'شخصي', data: byKind('personal'), backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--s5').trim(), stack: 'a', borderRadius: { topLeft: 4, topRight: 4 }, maxBarThickness: 36 },
+    ] }, options: baseOpts({ stacked: true }) });
+  },
+};
+
+/* ═════════════ الفلوس: تقفيل الشهر، اشتراكات، أقساط، مصروفات، دخل تاني ═════════════ */
+
+const MONEY_TABS = [['close', 'تقفيل الشهر', 'calculator'], ['subs', 'الاشتراكات', 'repeat'], ['inst', 'الأقساط', 'calendar-range'], ['expenses', 'المصروفات', 'receipt'], ['income', 'دخل تاني', 'hand-coins']];
+const moneyData = () => ({ payments: S.payments, projects: S.projects, incomes: S.incomes, otherIncome: S.otherIncome, campaigns: S.campaigns, subs: S.subscriptions, installments: S.installments, expenses: S.expenses });
+const shiftMonth = (key, n) => { const [y, m] = key.split('-').map(Number); return D.monthKey(new Date(y, m - 1 + n, 1)); };
+const fullMonth = key => { const [y, m] = key.split('-').map(Number); return `${I.monthName(new Date(y, m - 1, 1))} ${y}`; };
+const LEFT_COLOR = '--s3';
+
+function monthCloseHTML() {
+  const nowKey = D.monthKey(new Date()), key = S.closeMonth || nowKey;
+  const mc = I.monthClose(key, moneyData(), S.incomeMode), pc = I.monthClose(shiftMonth(key, -1), moneyData(), S.incomeMode);
+  const dl = (a, b, invert = false) => b ? `${deltaHTML((a - b) / Math.abs(b) * 100 * (invert ? 1 : 1), 'عن الشهر اللي فات')}` : '';
+  const base = mc.income || mc.spend || 1;
+  const segs = [...mc.groups.filter(g => g.total > 0).map(g => ({ label: g.label, color: g.color, v: g.total })), ...(mc.left > 0 ? [{ label: 'فاضلك', color: LEFT_COLOR, v: mc.left }] : [])];
+  const segTotal = sum(segs, s => s.v) || 1;
+  const pctOf = v => Math.round(v / base * 100);
+  const detail = g => g.items.length ? `<details class="money-details"><summary><span class="row" style="gap:8px"><i class="dot" style="background:var(${g.color})"></i>${ic(g.icon)} <b>${g.label}</b></span><span class="num"><b>${I.money(g.total)}</b> <span class="muted small">${mc.income ? `(${pctOf(g.total)}% من دخلك)` : ''}</span></span></summary>
+    <div class="list">${g.items.map(x => `<div class="list-item" style="cursor:default"><div class="li-body"><div class="li-title">${esc(x.label)}</div><div class="li-sub">${esc(x.sub || '')}</div></div><div class="li-end"><b class="num">${I.fmt(x.amount)}</b></div></div>`).join('')}</div></details>`
+    : `<div class="money-details empty-row"><span class="row" style="gap:8px"><i class="dot" style="background:var(${g.color})"></i>${ic(g.icon)} ${g.label}</span><span class="muted small">مفيش الشهر ده</span></div>`;
+  return `
+    <div class="row between" style="margin-bottom:14px">
+      <div class="row">
+        <button class="icon-btn" data-mshift="-1" aria-label="الشهر اللي فات" title="الشهر اللي فات">${ic('chevron-right')}</button>
+        <h2 style="font-size:20px;min-width:140px;text-align:center">${fullMonth(key)}</h2>
+        <button class="icon-btn" data-mshift="1" aria-label="الشهر الجاي" title="الشهر الجاي" ${key >= nowKey ? 'disabled style="opacity:.35"' : ''}>${ic('chevron-left')}</button>
+      </div>
+      <div class="row"><span class="muted small">الدخل من العملاء محسوب من:</span><div class="seg" id="incMode">${[['auto', 'تلقائي'], ['transfers', 'التحويلات المؤكدة'], ['projects', 'المشاريع في الشيت']].map(([v, l]) => `<button class="${S.incomeMode === v ? 'on' : ''}" data-v="${v}">${l}</button>`).join('')}</div></div>
+    </div>
+    <div class="grid g-4">
+      ${kpi({ icon: 'arrow-down-to-line', cls: 'i2', label: 'دخلك', value: I.fmt(mc.income), unit: 'ج.م', foot: dl(mc.income, pc.income) })}
+      ${kpi({ icon: 'arrow-up-from-line', cls: 'i3', label: 'صرفت', value: I.fmt(mc.spend), unit: 'ج.م', foot: pc.spend ? `${I.pct((mc.spend - pc.spend) / pc.spend * 100)} عن الشهر اللي فات` : '' })}
+      ${kpi({ icon: 'piggy-bank', cls: 'i1', label: mc.left >= 0 ? 'فاضلك' : 'عجز', value: `<span style="color:${mc.left >= 0 ? 'var(--good-text)' : 'var(--critical)'}">${I.fmt(Math.abs(mc.left))}</span>`, unit: 'ج.م', foot: dl(mc.left, pc.left) })}
+      ${kpi({ icon: 'percent', cls: 'i4', label: 'نسبة اللي فضل من دخلك', value: mc.income ? pctOf(mc.left) + '%' : '—', foot: mc.income ? (mc.left / mc.income >= 0.2 ? 'ادخار ممتاز' : mc.left >= 0 ? 'حاول توصل لـ 20%' : 'صرفت أكتر من دخلك') : 'سجّل دخلك' })}
+    </div>
+    <div class="grid g-main" style="margin-top:16px">
+      <div class="card">
+        <div class="card-head"><h3>${ic('pie-chart')} فلوسك راحت فين</h3><span class="sub">${mc.income ? `من دخل ${I.money(mc.income)}` : 'من إجمالي المصاريف'}</span></div>
+        ${segs.length ? `<div class="stackbar" role="img" aria-label="توزيع الدخل على المصاريف">${segs.map(s => `<span style="width:${s.v / segTotal * 100}%;background:var(${s.color})" title="${s.label}: ${I.money(s.v)}"></span>`).join('')}</div>
+        <div class="legend" style="margin:10px 0 16px">${segs.map(s => `<span><i style="background:var(${s.color})"></i>${s.label} ${pctOf(s.v)}%</span>`).join('')}</div>` : ''}
+        <div class="stack" style="gap:6px">${mc.groups.map(detail).join('')}
+          <div class="money-details empty-row" style="border-top:2px solid var(--border-strong)"><span class="row" style="gap:8px"><i class="dot" style="background:var(${LEFT_COLOR})"></i>${ic('piggy-bank')} <b>${mc.left >= 0 ? 'فاضلك' : 'عجز'}</b></span><b class="num" style="color:${mc.left >= 0 ? 'var(--good-text)' : 'var(--critical)'}">${I.money(mc.left)}</b></div>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="card">
+          <div class="card-head"><h3>${ic('arrow-down-to-line')} الدخل</h3></div>
+          <div class="list">
+            <div class="list-item" style="cursor:default"><div class="li-body"><div class="li-title">من العملاء</div><div class="li-sub">${mc.useTransfers ? 'التحويلات اللي أكدتها الشهر ده' : 'المدفوع في المشاريع اللي اتسجلت الشهر ده'}</div></div><div class="li-end"><b class="num">${I.fmt(mc.clients)}</b></div></div>
+            ${mc.fromAds ? `<div class="list-item" style="cursor:default;padding-inline-start:24px"><div class="li-body"><div class="li-sub">${ic('megaphone')} إيرادات متسجلة من حملاتك الإعلانية (للمعلومة)</div></div><div class="li-end"><span class="num small">${I.fmt(mc.fromAds)}</span></div></div>` : ''}
+            ${mc.otherItems.map(x => `<div class="list-item" style="cursor:default"><div class="li-body"><div class="li-title">${esc(x.label)}</div><div class="li-sub">${esc(x.sub || 'دخل تاني')}</div></div><div class="li-end"><b class="num">${I.fmt(x.amount)}</b></div></div>`).join('')}
+          </div>
+          <div class="row" style="margin-top:10px"><button class="btn sm" data-add="otherIncome">${ic('plus')} دخل تاني (مرتب، أرباح…)</button></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>${ic('briefcase')} ربح الشغل</h3></div>
+          <p style="margin:0" class="small muted">الدخل − (الإعلانات + الاشتراكات + مصاريف الشغل)، من غير المصاريف الشخصية والأقساط</p>
+          <div class="kpi" style="margin-top:8px"><div class="value" style="color:${mc.businessProfit >= 0 ? 'var(--good-text)' : 'var(--critical)'}">${I.fmt(mc.businessProfit)} <small>ج.م</small></div></div>
+          ${mc.groups[0].total ? `<p class="small" style="margin:10px 0 0">${ic('megaphone')} الإعلانات: صرفت ${I.money(mc.groups[0].total)} وجابت ${I.money(mc.fromAds)}${mc.adsReturn != null ? ` — كل 1 جنيه رجّع <b>${mc.adsReturn.toFixed(1)}</b>` : ''}</p>` : ''}
+        </div>
+        <div class="row"><button class="btn" id="mcCopy">${ic('copy')} انسخ ملخص الشهر</button>${addExpenseBtns}</div>
+      </div>
+    </div>`;
+}
+
+function monthSummaryText() {
+  const key = S.closeMonth || D.monthKey(new Date()), mc = I.monthClose(key, moneyData(), S.incomeMode);
+  return [
+    `تقفيل شهر ${fullMonth(key)}`, '',
+    `الدخل: ${I.money(mc.income)}`,
+    `- من العملاء: ${I.money(mc.clients)}`,
+    ...(mc.fromAds ? [`- إيرادات متسجلة من الحملات الإعلانية: ${I.money(mc.fromAds)}`] : []),
+    ...mc.otherItems.map(x => `- ${x.label}: ${I.money(x.amount)}`), '',
+    `المصاريف: ${I.money(mc.spend)}`,
+    ...mc.groups.filter(g => g.total).map(g => `- ${g.label}: ${I.money(g.total)}`), '',
+    `ربح الشغل: ${I.money(mc.businessProfit)}`,
+    `${mc.left >= 0 ? 'فاضلي' : 'عجز'}: ${I.money(Math.abs(mc.left))}${mc.income ? ` (${Math.round(mc.left / mc.income * 100)}% من الدخل)` : ''}`,
+  ].join('\n');
+}
+
+const subAvatar = s => avatar(s.name, s.name);
+
+function subsHTML() {
+  const subs = [...S.subscriptions].sort((a, b) => a.cancelled - b.cancelled || (a.daysToNext ?? 999) - (b.daysToNext ?? 999));
+  const active = subs.filter(s => !s.cancelled);
+  const monthly = sum(active, s => s.monthlyEGP);
+  const next = active.filter(s => s.next).sort((a, b) => a.next - b.next)[0];
+  const have = new Set(S.subscriptions.map(s => s.name.toLowerCase()));
+  const presets = D.SUB_PRESETS.filter(([n]) => !have.has(n.toLowerCase()));
+  const chips = `<div class="card" style="margin-bottom:16px"><div class="card-head" style="margin-bottom:10px"><h3>${ic('zap')} ضيف بسرعة</h3><span class="sub">دوس على البرنامج واكتب سعره وتاريخ الدفع</span></div>
+    <div class="chips" style="flex-wrap:wrap">${presets.map(([n, c]) => `<button class="chip" data-add="subscriptions" data-pre='${esc(JSON.stringify({ name: n, category: c }))}'>${ic('plus')}${n}</button>`).join('')}<button class="chip" data-add="subscriptions">${ic('plus')}برنامج تاني</button></div></div>`;
+  if (!subs.length) return chips + emptyState('repeat', 'مفيش اشتراكات متسجلة', 'سجّل اشتراكات البرامج اللي بتشتغل عليها، وهيجيلك تذكير قبل كل تجديد، وهتدخل لوحدها في تقفيل الشهر.');
+  return `<div class="grid g-4">
+      ${kpi({ icon: 'repeat', cls: 'i1', label: 'اشتراكات شغالة', value: active.length, foot: subs.length > active.length ? `${subs.length - active.length} ملغي` : '' })}
+      ${kpi({ icon: 'calendar', cls: 'i3', label: 'بتدفع في الشهر', value: I.fmt(monthly), unit: 'ج.م', foot: `بسعر الدولار ${S.settings.usdRate} ج.م` })}
+      ${kpi({ icon: 'calendar-range', cls: 'i4', label: 'في السنة', value: I.fmt(monthly * 12), unit: 'ج.م' })}
+      ${kpi({ icon: 'bell-ring', cls: 'i2', label: 'أقرب تجديد', value: next ? esc(next.name) : '—', foot: next ? `${fmtDate(next.next)} · ${dueText(next.daysToNext)}` : '' })}
+    </div>
+    <div style="margin-top:16px">${chips}</div>
+    <div class="project-grid">${subs.map(s => `<div class="card pcard" data-edit="subscriptions:${s.id}" style="${s.cancelled ? 'opacity:.55' : ''}">
+      <div class="top">${subAvatar(s)}<div class="li-body"><div class="li-title">${esc(s.name)}</div><div class="li-sub">${esc(s.category || '')}${s.method ? ' · ' + esc(s.method) : ''}</div></div>
+        ${s.cancelled ? `<span class="badge tone-muted">${ic('circle-x')}ملغي</span>` : s.next ? `<span class="badge tone-${s.daysToNext <= 2 ? 'warning' : 'info'}">${ic('repeat')}${dueText(s.daysToNext)}</span>` : ''}</div>
+      <div class="money-row"><span>${s.yearly ? 'سنوي' : 'شهري'}</span><b>${esc(s.price)} ${esc(s.currency || '')}</b></div>
+      <div class="money-row"><span>${s.cancelled ? 'اتلغى' : 'التجديد الجاي'}</span><span>${s.cancelled ? fmtDate(s.cancelDate ? D.parseDate(s.cancelDate) : null) || '—' : s.next ? fmtDate(s.next) : 'اكتب تاريخ الدفع'}</span></div>
+      ${!s.cancelled ? `<div class="money-row"><span>≈ في الشهر</span><b>${I.money(s.monthlyEGP)}</b></div>` : ''}
+    </div>`).join('')}</div>`;
+}
+
+function instHTML() {
+  const list = [...S.installments].sort((a, b) => a.done - b.done || (a.daysToDue ?? 999) - (b.daysToDue ?? 999));
+  const active = list.filter(i => !i.done);
+  if (!list.length) return emptyState('calendar-range', 'مفيش أقساط متسجلة', 'سجّل أي قسط بتدفعه (لابتوب، موبايل، جمعية…) وهيجيلك تذكير قبل ميعاده، وتعرف فاضل عليك كام.', `<button class="btn primary" data-add="installments">${ic('plus')} ضيف قسط</button>`);
+  const next = active.filter(i => i.nextDue).sort((a, b) => a.nextDue - b.nextDue)[0];
+  return `<div class="grid g-3">
+      ${kpi({ icon: 'calendar-range', cls: 'i3', label: 'أقساطك في الشهر', value: I.fmt(sum(active, i => i.monthlyEGP)), unit: 'ج.م', foot: `${active.length} قسط شغال` })}
+      ${kpi({ icon: 'hourglass', cls: 'i4', label: 'فاضل عليك', value: I.fmt(sum(active, i => i.remainingEGP)), unit: 'ج.م' })}
+      ${kpi({ icon: 'bell-ring', cls: 'i2', label: 'أقرب قسط', value: next ? esc(next.name) : '—', foot: next ? `${fmtDate(next.nextDue)} · ${dueText(next.daysToDue)}` : 'مفيش' })}
+    </div>
+    <div class="project-grid" style="margin-top:16px">${list.map(i => `<div class="card pcard" data-edit="installments:${i.id}" style="${i.done ? 'opacity:.6' : ''}">
+      <div class="top"><div class="avatar" style="background:linear-gradient(135deg,#f59e0b,#f43f5e)">${ic('calendar-range')}</div><div class="li-body"><div class="li-title">${esc(i.name)}</div><div class="li-sub">${esc(i.monthly)} ${esc(i.currency || 'جنيه')} في الشهر · ${i.months} شهر</div></div>
+        ${i.done ? `<span class="badge tone-good">${ic('badge-check')}خلص</span>` : i.nextDue ? `<span class="badge tone-${dueTone(i.daysToDue)}">${ic('calendar-clock')}${dueText(i.daysToDue)}</span>` : ''}</div>
+      <div><div class="progress"><span style="width:${i.months ? i.paidCount / i.months * 100 : 0}%"></span></div>
+        <div class="money-row" style="margin-top:6px"><span>اتدفع ${i.paidCount} من ${i.months}</span><span>فاضل <b>${I.fmt(i.remainingN)} ${esc(i.currency || 'جنيه')}</b></span></div></div>
+      <div class="money-row"><span>آخر قسط</span><span>${i.endDate ? fmtDate(i.endDate) : '—'}</span></div>
+      ${!i.done && !i.paidThisMonth && i.nextDue && i.daysToDue <= 7 ? `<button class="btn primary sm" data-ipay="${i.id}">${ic('check')} دفعت قسط الشهر ده</button>` : i.paidThisMonth ? `<span class="muted small">${ic('check')} قسط الشهر ده اتدفع</span>` : ''}
+    </div>`).join('')}</div>`;
+}
+
+function incomeHTML() {
+  const list = [...S.otherIncome].sort((a, b) => (b.dateObj?.getTime() || 0) - (a.dateObj?.getTime() || 0));
+  const intro = `<p class="muted small" style="margin:0 0 14px">${ic('info')} أي فلوس بتدخلك غير فلوس العملاء اللي في الشيت: مرتب شغلك في KDP، أرباح كتب، شغل فريلانس تاني… بتدخل في تقفيل الشهر.</p>`;
+  if (!list.length) return intro + emptyState('hand-coins', 'مفيش دخل تاني متسجل', 'زي "مرتب كل شهر من شغل Amazon KDP".', `<button class="btn primary" data-add="otherIncome" data-pre='${esc(JSON.stringify({ source: 'مرتب شغل KDP' }))}'>${ic('plus')} سجّل مرتب الشهر</button>`);
+  const mk = D.monthKey(new Date());
+  const cur = list.filter(x => x.dateObj && D.monthKey(x.dateObj) === mk);
+  return intro + `<div class="grid g-3">
+      ${kpi({ icon: 'hand-coins', cls: 'i2', label: `دخل تاني في ${I.monthName(new Date())}`, value: I.fmt(sum(cur, x => x.amountEGP)), unit: 'ج.م' })}
+      ${kpi({ icon: 'sigma', cls: 'i1', label: 'إجمالي المتسجل', value: I.fmt(sum(list, x => x.amountEGP)), unit: 'ج.م' })}
+      ${kpi({ icon: 'calendar', cls: 'i4', label: 'متوسط الشهر', value: I.fmt(sum(list, x => x.amountEGP) / Math.max(new Set(list.filter(x => x.dateObj).map(x => D.monthKey(x.dateObj))).size, 1)), unit: 'ج.م' })}
+    </div>
+    <div class="card" style="margin-top:16px"><div class="list">${list.map(x => `<div class="list-item" data-edit="otherIncome:${x.id}"><div class="avatar" style="background:linear-gradient(135deg,#10b981,#0fb5d4)">${ic('hand-coins')}</div>
+      <div class="li-body"><div class="li-title">${esc(x.source)}</div><div class="li-sub">${fmtDate(x.dateObj) || esc(x.date)}${x.notes ? ' · ' + esc(x.notes) : ''}</div></div><div class="li-end"><b>${esc(x.amount)} ${esc(x.currency || '')}</b></div></div>`).join('')}</div></div>`;
+}
+
+VIEWS.money = {
+  title: () => 'الفلوس والمصاريف',
+  sub: () => 'دخلت كام، راحت فين، وفضلك كام',
+  render() {
+    const t = S.moneyTab;
+    const tabs = `<div class="seg" id="mtabs" style="margin-bottom:16px;flex-wrap:wrap">${MONEY_TABS.map(([v, l, i]) => `<button class="${t === v ? 'on' : ''}" data-v="${v}">${l}</button>`).join('')}</div>`;
+    return tabs + ({ close: monthCloseHTML, subs: subsHTML, inst: instHTML, expenses: () => VIEWS.expenses.render(), income: incomeHTML }[t] || monthCloseHTML)();
+  },
+  after() {
+    $$('#mtabs button').forEach(b => b.onclick = () => { S.moneyTab = b.dataset.v; history.replaceState(null, '', `#/money?t=${b.dataset.v}`); renderView(true); });
+    $$('[data-mshift]').forEach(b => b.onclick = () => { const now = D.monthKey(new Date()); const k = shiftMonth(S.closeMonth || now, Number(b.dataset.mshift)); if (k > now) return; S.closeMonth = k; renderView(true); });
+    $$('#incMode button').forEach(b => b.onclick = () => { S.incomeMode = b.dataset.v; D.LS.set('incomeMode', S.incomeMode); renderView(true); });
+    $('#mcCopy') && ($('#mcCopy').onclick = () => navigator.clipboard.writeText(monthSummaryText()).then(() => toast('اتنسخ الملخص', 'ok')));
+    $$('[data-ipay]').forEach(b => b.onclick = async e => {
+      e.stopPropagation();
+      const i = S.installments.find(x => x.id === b.dataset.ipay);
+      if (await save('installments', 'update', i._row, { paidCount: String(i.paidCount + 1), lastPaid: D.monthKey(new Date()) }, checkFor('installments', i))) confetti();
+    });
+    if (S.moneyTab === 'expenses') VIEWS.expenses.after();
   },
 };
 
@@ -800,10 +1018,482 @@ VIEWS.notes = {
 VIEWS.more = {
   title: () => 'المزيد',
   render() {
-    const tiles = [['tasks', 'المهام', 'list-checks', `${S.tasks.filter(t => !t.done).length} مفتوحة`], ['ads', 'Amazon Ads', 'target', `${S.ads.length} سجل`], ['expenses', 'المصروفات', 'receipt', 'صافي الربح'], ['notes', 'ملاحظاتي', 'notebook-pen', `${S.notes.length} ملاحظة`], ['tools', 'الأدوات والرسائل', 'calculator', 'عروض أسعار ورسائل جاهزة'], ['settings', 'الإعدادات', 'settings', 'الربط والإشعارات'], ['setup', 'دليل الربط والتثبيت', 'book-open-check', 'خطوة بخطوة']];
+    const tiles = [['analytics', 'التحليلات', 'chart-column', 'البيزنس بيكبر ولا لأ'], ['ideas', 'الأفكار والنمو', 'lightbulb', 'أفكار من أرقامك'], ['tasks', 'المهام', 'list-checks', `${S.tasks.filter(t => !t.done).length} مفتوحة`], ['ads', 'Amazon Ads', 'target', `كتب العملاء · ${S.ads.length} سجل`], ['money', 'الفلوس والمصاريف', 'wallet', 'تقفيل الشهر، اشتراكات، أقساط'], ['notes', 'ملاحظاتي', 'notebook-pen', `${S.notes.length} ملاحظة`], ['tools', 'الأدوات والرسائل', 'calculator', 'عروض أسعار ورسائل جاهزة'], ['settings', 'الإعدادات', 'settings', 'الربط والإشعارات'], ['setup', 'دليل الربط والتثبيت', 'book-open-check', 'خطوة بخطوة']];
     return `<div class="more-grid">${tiles.map(([k, l, i, s]) => `<a class="card more-tile" href="#/${k}"><div class="kpi-icon">${ic(i)}</div><b>${l}</b><small>${s}</small></a>`).join('')}</div>`;
   },
 };
+
+// كروت الرئيسية: تحويلات مستنية تأكيد + الحملات الشغالة
+function homeLiveCards() {
+  const pend = S.payments.filter(p => p.statusKey === 'pending');
+  const live = S.campaigns.filter(c => c.state === 'active');
+  const hasMoney = S.subscriptions.length || S.installments.length || S.otherIncome.length || S.expenses.length;
+  if (!pend.length && !live.length && !hasMoney) return '';
+  const cards = [];
+  if (hasMoney) {
+    const mc = I.monthClose(D.monthKey(new Date()), moneyData(), S.incomeMode);
+    const soon = [...S.subscriptions.filter(s => s.next && s.daysToNext <= 7).map(s => `${s.name} ${dueText(s.daysToNext)}`), ...S.installments.filter(i => i.nextDue && !i.done && i.daysToDue <= 7).map(i => `${i.name} ${dueText(i.daysToDue)}`)];
+    cards.push(`<div class="card insight t-${mc.left >= 0 ? 'good' : 'critical'}"><div class="ins-icon tone-${mc.left >= 0 ? 'good' : 'critical'}">${ic('wallet')}</div><div>
+      <div class="muted small">${I.monthName(new Date())} لحد النهارده</div>
+      <h4>دخلك ${I.money(mc.income)} · صرفت ${I.money(mc.spend)} · ${mc.left >= 0 ? 'فاضلك' : 'عجز'} ${I.money(Math.abs(mc.left))}</h4>
+      <p>${soon.length ? `جاي قريب: ${esc(soon.slice(0, 3).join('، '))}` : 'مفيش اشتراكات أو أقساط الأسبوع ده.'}</p>
+      <a class="btn sm" href="#/money?t=close">تقفيل الشهر ${ic('chevron-left')}</a></div></div>`);
+  }
+  if (pend.length) cards.push(`<div class="card insight t-warning"><div class="ins-icon tone-warning">${ic('receipt-text')}</div><div><h4>${pend.length} تحويل مستني تأكيدك (${I.money(sum(pend, p => p.amountEGP))})</h4><p>${esc(pend.slice(0, 3).map(p => p.client).join('، '))}. اتأكد إن الفلوس وصلت ودوس "وصلت".</p><a class="btn sm" href="#/payments">راجعهم ${ic('chevron-left')}</a></div></div>`);
+  live.slice(0, pend.length ? 1 : 2).forEach(c => cards.push(`<div class="card insight t-${c.revenueEGP >= c.spentEGP ? 'good' : 'info'}"><div class="ins-icon tone-${c.revenueEGP >= c.spentEGP ? 'good' : 'info'}">${ic('megaphone')}</div><div>
+    <div class="muted small">حملة شغالة · اليوم ${c.elapsed} من ${c.totalDays}</div><h4>${esc(c.name)}</h4>
+    <p>صرفت ${I.money(c.spentEGP)}${c.spentEstimated ? ' (الميزانية)' : ''} · جابت ${I.money(c.revenueEGP)}${c.roas != null && c.revenueEGP ? ` · كل 1 جنيه رجّع ${c.roas.toFixed(1)}` : ''}</p>
+    <div class="row" style="margin-top:10px"><button class="btn sm primary" data-cinc="${c.rowId}">${ic('plus')} ضيف إيراد</button><a class="btn sm" href="#/campaign/${c.rowId}">التفاصيل</a></div></div></div>`));
+  return `<div class="grid g-2" style="margin-top:16px">${cards.join('')}</div>`;
+}
+
+/* ═════════════ التحويلات والمدفوعات ═════════════ */
+
+const PAY_TONE = { pending: 'warning', confirmed: 'good', rejected: 'critical' };
+const PAY_ICON = { pending: 'hourglass', confirmed: 'badge-check', rejected: 'circle-x' };
+const payBadge = p => `<span class="badge tone-${PAY_TONE[p.statusKey]}">${ic(PAY_ICON[p.statusKey])}${D.PAY_STATUS[p.statusKey]}</span>`;
+const thumb = url => url
+  ? `<button type="button" class="thumb" data-rcpt-view="${esc(url)}" aria-label="عرض صورة التحويل"><img data-rcpt="${esc(url)}" alt=""></button>`
+  : `<div class="thumb empty" title="من غير صورة">${ic('image-off')}</div>`;
+const unitOf = p => p.currency === 'SAR' ? 'ريال' : p.currency === 'USD' ? 'دولار' : 'جنيه';
+const COUNTRY_OF = [['مصر', /مصر/], ['السعودية', /سعود/], ['الإمارات', /امارات|إمارات/], ['الكويت', /كويت/], ['قطر', /قطر/], ['البحرين', /بحرين/], ['عُمان', /عمان|عُمان/], ['الأردن', /أردن|اردن/], ['العراق', /عراق/], ['المغرب', /مغرب/]];
+const countryOf = nat => (COUNTRY_OF.find(([, re]) => re.test(nat || '')) || [''])[0];
+
+function paymentRow(p) {
+  return `<div class="list-item" data-edit="payments:${p.id}">${thumb(p.receipt)}
+    <div class="li-body"><div class="li-title">${esc(p.client || 'عميل')} — ${esc(p.amount)} ${esc(p.currency || '')}</div>
+    <div class="li-sub">${esc(p.method || '')} · ${fmtDate(p.dateObj) || esc(p.date)}${p.project ? ' · ' + esc(I.short(p.project, 40)) : ''}</div></div>
+    <div class="li-end">${payBadge(p)}</div></div>`;
+}
+
+// الصور بتتحمل مرة واحدة من درايف وبعدين بتتحفظ على الجهاز
+const rcptMem = new Map();
+async function receiptSrc(url) {
+  if (rcptMem.has(url)) return rcptMem.get(url);
+  let src;
+  if (url.startsWith('local:')) src = await idbGet(url.slice(6));
+  else {
+    const id = driveId(url);
+    src = id && await idbGet('rcpt:' + id);
+    if (!src && id && hasRemote()) { src = await D.fetchReceipt(S.settings, id); idbSet('rcpt:' + id, src); }
+  }
+  if (!src) throw new Error('الصورة مش موجودة');
+  rcptMem.set(url, src);
+  return src;
+}
+function loadThumbs(root = document) {
+  $$('img[data-rcpt]:not([src])', root).forEach(img => receiptSrc(img.dataset.rcpt)
+    .then(src => { img.src = src; })
+    .catch(() => { img.closest('.thumb, .pay-img')?.classList.add('err'); }));
+}
+async function viewReceipt(url) {
+  const box = document.createElement('div');
+  box.className = 'lightbox';
+  box.innerHTML = `<div class="muted">${ic('loader')} بتحميل الصورة…</div><div class="row">${url.startsWith('local:') ? '' : `<a class="btn sm" href="${esc(url)}" target="_blank" rel="noopener">${ic('external-link')} افتحها في درايف</a>`}<button class="btn sm">${ic('x')} إغلاق</button></div>`;
+  box.onclick = e => { if (e.target === box || e.target.closest('button')) box.remove(); };
+  document.body.append(box); paint();
+  try { const src = await receiptSrc(url); box.firstElementChild.outerHTML = `<img src="${src}" alt="صورة التحويل">`; }
+  catch (e) { box.firstElementChild.textContent = 'مش قادر أحمّل الصورة: ' + e.message; }
+}
+
+// بنصغّر الصورة قبل الرفع (أسرع ومساحة أقل على درايف)
+async function compressImage(blob, max = 1600, q = 0.82) {
+  let src;
+  try { src = await createImageBitmap(blob); }
+  catch { const u = URL.createObjectURL(blob); src = new Image(); src.src = u; await src.decode(); }
+  const scale = Math.min(1, max / Math.max(src.width, src.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(src.width * scale); c.height = Math.round(src.height * scale);
+  c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+  const dataUrl = c.toDataURL('image/jpeg', q);
+  return { dataUrl, b64: dataUrl.split(',')[1], mime: 'image/jpeg', name: `تحويل-${D.isoDay(new Date())}-${String(Date.now()).slice(-5)}.jpg` };
+}
+async function setReceiptDraft(blob) {
+  if (!S.receiptDraft || !blob) return;
+  try {
+    const img = await compressImage(blob);
+    S.receiptDraft.file = img;
+    const prev = $('#rcPrev'); if (!prev) return;
+    prev.src = img.dataUrl; prev.hidden = false; $('#rcEmpty').hidden = true;
+  } catch { toast('الملف ده مش صورة أو مش مدعوم', 'err'); }
+}
+
+// المبلغ بعملة المشروع (لو العميل حوّل بعملة مختلفة)
+const amountInProject = (proj, amount, unit) => {
+  if (unit === unitOf(proj)) return amount;
+  return Math.round(D.toEGP(amount, unit, S.settings) / proj.rate);
+};
+
+function openPaymentForm(item = null, pre = {}) {
+  const selRow = item?.projectRowN || pre.project?._row || '';
+  const projs = [...S.projects].sort((a, b) => (b._row === selRow) - (a._row === selRow) || b.remainingEGP - a.remainingEGP);
+  S.receiptDraft = { file: null };
+  const d = item?.dateObj || new Date();
+  openSheet({
+    title: `${ic('receipt-text')} ${item ? 'تعديل التحويل' : 'صورة تحويل جديدة'}`,
+    body: `
+      <label class="drop" id="rcDrop">
+        <img id="rcPrev" alt="صورة التحويل" hidden>
+        <div id="rcEmpty" class="drop-empty">${ic('image-plus')}<b>${item?.receipt ? 'اختار صورة جديدة لو عايز تغيرها' : 'ضيف صورة التحويل'}</b>
+          <span class="muted small">دوس هنا واختار من الصور${matchMedia('(pointer: fine)').matches ? '، أو الصق الصورة (Ctrl+V)، أو اسحبها وافلتها هنا' : '، أو شارك الصورة من واتساب لـ KDP Hub'}</span></div>
+        <input type="file" accept="image/*" id="rcFile" hidden>
+      </label>
+      ${item?.receipt ? `<div class="row" style="margin-top:8px">${thumb(item.receipt)}<span class="muted small">الصورة الحالية</span></div>` : ''}
+      <form class="form" id="payForm" onsubmit="return false" style="margin-top:16px">
+        <div class="field full"><label>${ic('folder-kanban')} المشروع</label><select name="projectRow">
+          <option value="">— عميل مش في القايمة —</option>
+          ${projs.map(p => `<option value="${p._row}" ${p._row === selRow ? 'selected' : ''}>${esc(p.displayName)} — ${esc(I.short(p.project, 40))}${p.remainingEGP > 0 ? ` (باقي ${I.fmt(p.remainingEGP / p.rate)} ${unitOf(p)})` : ''}</option>`).join('')}
+        </select></div>
+        <div class="field full"><label>${ic('user')} اسم العميل</label><input name="client" value="${esc(item?.client || pre.project?.displayName || '')}"></div>
+        <div class="field"><label>${ic('coins')} المبلغ اللي اتحوّل</label><input name="amount" inputmode="decimal" value="${esc(item?.amount || '')}"></div>
+        <div class="field"><label>${ic('banknote')} العملة</label><select name="currency">${D.MONEY_UNITS.map(u => `<option ${(item?.currency || 'جنيه') === u ? 'selected' : ''}>${u}</option>`).join('')}</select></div>
+        <div class="field"><label>${ic('wallet')} طريقة الدفع</label><select name="method">${D.PAY_METHODS.map(m => `<option ${(item?.method || 'فودافون كاش') === m ? 'selected' : ''}>${m}</option>`).join('')}</select></div>
+        <div class="field"><label>${ic('calendar')} التاريخ</label><input type="date" name="date" value="${D.isoDay(d)}"></div>
+        <div class="field full"><label>${ic('sticky-note')} ملاحظات</label><textarea name="notes" style="min-height:60px">${esc(item?.notes || '')}</textarea></div>
+        ${item ? '' : `<label class="check full"><input type="checkbox" id="payConfirmNow">${ic('badge-check')} راجعت وأكدت إن الفلوس وصلت فعلاً</label>
+        <label class="check full" id="applyWrap" hidden><input type="checkbox" id="payApply" checked>${ic('file-pen-line')} ضيف المبلغ لحساب المشروع في الشيت (المدفوع والباقي)</label>`}
+      </form>`,
+    foot: `<button class="btn primary" id="paySave">${ic('check')} حفظ</button><button class="btn ghost" id="payCancel">إلغاء</button>${item ? `<button class="btn danger" id="payDel" style="margin-inline-start:auto">${ic('trash-2')} حذف</button>` : ''}`,
+  });
+  loadThumbs($('#sheet'));
+  const form = $('#payForm'), f = n => form.querySelector(`[name="${n}"]`);
+  const drop = $('#rcDrop');
+  $('#rcFile').onchange = e => setReceiptDraft(e.target.files[0]);
+  drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+  drop.ondragleave = () => drop.classList.remove('over');
+  drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); setReceiptDraft([...e.dataTransfer.files].find(x => x.type.startsWith('image/'))); };
+  if (pre.file) setReceiptDraft(pre.file);
+
+  const syncProject = (first = false) => {
+    const p = S.projects.find(x => x._row === Number(f('projectRow').value));
+    if (p && (!first || !item)) {
+      f('client').value = p.displayName;
+      f('currency').value = unitOf(p);
+      if (!f('amount').value && p.remainingEGP > 0) f('amount').value = Math.round(p.remainingEGP / p.rate);
+      if (!item) f('method').value = /سعود|امارات|إمارات|كويت|قطر/.test(p.nationality) ? 'برق' : 'فودافون كاش';
+    }
+    const wrap = $('#applyWrap'); if (wrap) wrap.hidden = !(p && $('#payConfirmNow').checked);
+  };
+  f('projectRow').onchange = () => { f('amount').value = ''; syncProject(); };
+  $('#payConfirmNow')?.addEventListener('change', () => syncProject());
+  syncProject(true);
+
+  $('#payCancel').onclick = () => { S.receiptDraft = null; pre.project ? openProject(pre.project.id) : closeSheet(); };
+  $('#payDel') && ($('#payDel').onclick = () => confirmDelete('payments', { ...item, name: `تحويل ${item.client || ''} (${item.amount})` }));
+  $('#paySave').onclick = async () => {
+    const amount = Number(D.toLatin(f('amount').value).replace(/[^\d.]/g, ''));
+    if (!amount) return toast('اكتب المبلغ اللي اتحوّل', 'err');
+    const proj = S.projects.find(x => x._row === Number(f('projectRow').value));
+    const values = {
+      date: f('date').value ? D.sheetDay(new Date(f('date').value + 'T00:00')) : D.sheetDay(new Date()),
+      client: f('client').value.trim() || proj?.displayName || '', project: proj ? I.short(proj.project, 80) : '', projectRow: proj ? String(proj._row) : '',
+      amount: String(amount), currency: f('currency').value, method: f('method').value, notes: f('notes').value.trim(),
+    };
+    if (!values.client) return toast('اختار المشروع أو اكتب اسم العميل', 'err');
+    $('#paySave').disabled = true;
+    const file = S.receiptDraft?.file || null;
+    let ok;
+    if (item) ok = await save('payments', 'update', item._row, values, checkFor('payments', item), file);
+    else {
+      const confirmed = $('#payConfirmNow').checked, apply = confirmed && proj && $('#payApply').checked;
+      if (apply && !(await save('clients', 'update', proj._row, paymentValues(proj, amountInProject(proj, amount, values.currency)), checkFor('clients', proj)))) { $('#paySave').disabled = false; return; }
+      ok = await save('payments', 'add', null, { ...values, status: confirmed ? D.PAY_STATUS.confirmed : D.PAY_STATUS.pending, applied: apply ? 'نعم' : '' }, null, file);
+    }
+    if (ok) { S.receiptDraft = null; closeSheet(); if (!item) confetti(); } else $('#paySave').disabled = false;
+  };
+}
+
+function linkedProject(p) {
+  if (!p.projectRowN) return null;
+  return S.projects.find(x => x._row === p.projectRowN && (!p.client || x.displayName === D.cleanName(p.client))) || null;
+}
+
+async function confirmPayment(p, apply = true) {
+  const proj = linkedProject(p);
+  const doApply = apply && proj && !p.applied;
+  if (doApply && !(await save('clients', 'update', proj._row, paymentValues(proj, amountInProject(proj, p.amountN, p.currency)), checkFor('clients', proj)))) return false;
+  const ok = await save('payments', 'update', p._row, { status: D.PAY_STATUS.confirmed, applied: doApply || p.applied ? 'نعم' : '' }, checkFor('payments', p));
+  if (ok) confetti();
+  return ok;
+}
+
+function openPaymentDetail(p) {
+  const proj = linkedProject(p);
+  const num = proj ? D.whatsappNumber(proj) : '';
+  const thanks = `أهلًا بحضرتك،\nوصلني التحويل بمبلغ ${p.amount} ${p.currency || ''}، شكرًا جدًا.\n${proj && !proj.isDone ? 'هكمل الشغل على المشروع وأبعت لحضرتك التحديثات أول بأول.' : 'سعيد بالتعامل مع حضرتك.'}`;
+  openSheet({
+    title: `${ic('receipt-text')} تحويل — ${esc(p.client || 'عميل')}`,
+    body: `
+      ${p.receipt ? `<div class="pay-img big" data-rcpt-view="${esc(p.receipt)}"><img data-rcpt="${esc(p.receipt)}" alt="صورة التحويل"></div>` : `<div class="empty" style="padding:20px">${ic('image-off')} مفيش صورة للتحويل ده</div>`}
+      <div class="row" style="margin-top:12px">${payBadge(p)}${p.applied ? `<span class="badge tone-good">${ic('file-check')}اتسجل في حساب المشروع</span>` : ''}</div>
+      <div class="kv">
+        <div><small>المبلغ</small><b>${esc(p.amount)} ${esc(p.currency || '')}</b></div>
+        <div><small>طريقة الدفع</small><b>${esc(p.method || '—')}</b></div>
+        <div><small>التاريخ</small><b>${fmtDate(p.dateObj) || esc(p.date || '—')}</b></div>
+        <div><small>المشروع</small><b>${proj ? `<a href="#" data-open="${proj.id}" style="color:var(--accent)">${esc(I.short(proj.project, 40))}</a>` : esc(p.project || '—')}</b></div>
+      </div>
+      ${p.notes ? `<p class="muted">${esc(p.notes)}</p>` : ''}
+      ${p.statusKey !== 'confirmed' && proj && !p.applied ? `<label class="check"><input type="checkbox" id="pdApply" checked>${ic('file-pen-line')} لما أأكد: ضيف ${esc(p.amount)} ${esc(p.currency || '')} لحساب المشروع (باقي حالياً ${I.fmt(proj.remainingEGP / proj.rate)} ${unitOf(proj)})</label>` : ''}
+      ${p.statusKey === 'confirmed' && proj && !p.applied ? `<button class="btn" id="pdApplyNow" style="margin-top:8px">${ic('file-pen-line')} ضيف المبلغ لحساب المشروع دلوقتي</button>` : ''}
+      ${num && p.statusKey === 'confirmed' ? `<div class="row" style="margin-top:12px"><a class="btn wa sm" target="_blank" rel="noopener" href="https://wa.me/${num}?text=${encodeURIComponent(thanks)}">${ic('send')} ابعت للعميل إن التحويل وصل</a></div>` : ''}`,
+    foot: `${p.statusKey !== 'confirmed' ? `<button class="btn primary" id="pdOk">${ic('badge-check')} الفلوس وصلت — أكّد</button>` : ''}
+      ${p.statusKey === 'pending' ? `<button class="btn" id="pdNo">${ic('circle-x')} مش واصلة</button>` : ''}
+      <button class="btn ghost" id="pdEdit">${ic('pencil')} تعديل</button>`,
+  });
+  loadThumbs($('#sheet'));
+  $('#pdOk') && ($('#pdOk').onclick = async () => { $('#pdOk').disabled = true; if (await confirmPayment(p, $('#pdApply')?.checked ?? true)) { const np = S.payments.find(x => x._row === p._row); np ? openPaymentDetail(np) : closeSheet(); } else $('#pdOk').disabled = false; });
+  $('#pdNo') && ($('#pdNo').onclick = async () => { if (await save('payments', 'update', p._row, { status: D.PAY_STATUS.rejected }, checkFor('payments', p))) closeSheet(); });
+  $('#pdApplyNow') && ($('#pdApplyNow').onclick = () => confirmPayment(p, true).then(ok => ok && closeSheet()));
+  $('#pdEdit').onclick = () => openPaymentForm(p);
+}
+
+async function handleSharedReceipt() {
+  try {
+    const cache = await caches.open('kdphub-share');
+    const res = await cache.match('shared-receipt');
+    if (!res) return;
+    const blob = await res.blob();
+    await cache.delete('shared-receipt');
+    history.replaceState(null, '', '#/payments');
+    openPaymentForm(null, { file: blob });
+  } catch { /* مفيش صورة متشاركة */ }
+}
+
+VIEWS.payments = {
+  title: () => 'التحويلات والمدفوعات',
+  sub: () => 'صور تحويلات العملاء: أكّدها وهتتسجل في حسابهم',
+  render() {
+    const d = device();
+    const tip = `<div class="card insight t-info" style="margin-bottom:16px"><div class="ins-icon tone-info">${ic('share-2')}</div><div><h4>أسرع طريقة تبعت بيها صورة التحويل للأبلكيشن</h4><p>${d.ios
+      ? 'على iPhone: احفظ الصورة من واتساب، وبعدين دوس + واختارها من الصور.'
+      : d.mobile ? 'من واتساب: دوس على صورة التحويل ← مشاركة ← اختار <b>KDP Hub</b>، وهيفتحلك الأبلكيشن والصورة جاهزة (لازم يكون الأبلكيشن متثبت).'
+        : 'على اللابتوب: من واتساب ويب انسخ الصورة (كليك يمين ← نسخ الصورة) وارجع هنا ودوس <b>Ctrl+V</b>، وهتتفتح لوحدها.'}</p></div></div>`;
+    if (!S.payments.length) return tip + emptyState('receipt-text', 'مفيش تحويلات متسجلة', 'لما عميل يبعتلك صورة تحويل ضيفها هنا. بتتحفظ في فولدر على جوجل درايف، ولما تأكد إن الفلوس وصلت بيتسجل المبلغ في حساب المشروع لوحده.', `<button class="btn primary" data-act="new-payment">${ic('plus')} ضيف صورة تحويل</button>`);
+    const pend = S.payments.filter(p => p.statusKey === 'pending');
+    const conf = S.payments.filter(p => p.statusKey === 'confirmed');
+    const mk = D.monthKey(new Date());
+    const confMonth = conf.filter(p => p.dateObj && D.monthKey(p.dateObj) === mk);
+    const list = [...S.payments].sort((a, b) => (b.dateObj?.getTime() || 0) - (a.dateObj?.getTime() || 0) || b._row - a._row);
+    return tip + `<div class="grid g-4">
+      ${kpi({ icon: 'badge-check', cls: 'i2', label: `اتأكد في ${I.monthName(new Date())}`, value: I.fmt(sum(confMonth, p => p.amountEGP)), unit: 'ج.م', foot: `${confMonth.length} تحويل` })}
+      ${kpi({ icon: 'hourglass', cls: 'i3', label: 'مستني تأكيدك', value: pend.length, foot: pend.length ? `بقيمة ${I.money(sum(pend, p => p.amountEGP))}` : 'كله متأكد' })}
+      ${kpi({ icon: 'wallet', cls: 'i1', label: 'إجمالي المؤكد', value: I.fmt(sum(conf, p => p.amountEGP)), unit: 'ج.م', foot: `${conf.length} تحويل` })}
+      ${kpi({ icon: 'circle-x', cls: 'i4', label: 'مش واصلة', value: S.payments.filter(p => p.statusKey === 'rejected').length, foot: 'تحويلات اتقال إنها وصلت ومالقتهاش' })}
+    </div>
+    ${pend.length ? `<h2 class="section-title">${ic('hourglass')} مستني تأكيدك</h2>
+    <div class="project-grid">${pend.map(p => `<div class="card pay-card">
+      ${p.receipt ? `<div class="pay-img" data-rcpt-view="${esc(p.receipt)}"><img data-rcpt="${esc(p.receipt)}" alt="صورة التحويل"></div>` : `<div class="pay-img">${ic('image-off')}</div>`}
+      <div><div class="li-title">${esc(p.client || 'عميل')} — ${esc(p.amount)} ${esc(p.currency || '')}</div><div class="li-sub">${esc(p.method || '')} · ${fmtDate(p.dateObj) || esc(p.date)}${p.project ? ' · ' + esc(I.short(p.project, 35)) : ''}</div></div>
+      <div class="row"><button class="btn primary sm" data-pok="${p.id}" title="${linkedProject(p) ? 'وهيتسجل المبلغ في حساب المشروع' : ''}">${ic('badge-check')} وصلت</button><button class="btn sm" data-pno="${p.id}">${ic('circle-x')} مش واصلة</button><button class="btn ghost sm" data-edit="payments:${p.id}">التفاصيل</button></div>
+    </div>`).join('')}</div>` : ''}
+    <h2 class="section-title">${ic('list')} كل التحويلات</h2>
+    <div class="card"><div class="list">${list.map(paymentRow).join('')}</div></div>`;
+  },
+  after(r) {
+    loadThumbs();
+    $$('[data-pok]').forEach(b => b.onclick = async () => { b.disabled = true; const p = S.payments.find(x => x.id === b.dataset.pok); if (!(await confirmPayment(p, true))) b.disabled = false; });
+    $$('[data-pno]').forEach(b => b.onclick = async () => { const p = S.payments.find(x => x.id === b.dataset.pno); if (confirm(`تأكيد إن تحويل ${p.client} (${p.amount}) مش واصل؟`)) save('payments', 'update', p._row, { status: D.PAY_STATUS.rejected }, checkFor('payments', p)); });
+    if (r.params.get('shared')) handleSharedReceipt();
+  },
+};
+
+/* ═════════════ حملاتي الإعلانية ═════════════ */
+
+const campBadge = c => { const s = I.CAMPAIGN_STATE[c.state]; return `<span class="badge tone-${s.tone}">${ic(s.icon)}${s.label}</span>`; };
+const roiBadge = c => c.roi == null || (!c.revenueEGP && c.state === 'scheduled') ? '' : `<span class="badge tone-${c.roi >= 0 ? 'good' : 'critical'}">${ic(c.roi >= 0 ? 'trending-up' : 'trending-down')}العائد ${I.pct(c.roi)}</span>`;
+const campRange = c => `${fmtDate(c.startDate)} ← ${fmtDate(c.endDate)}`;
+
+function campaignCard(c) {
+  return `<div class="card pcard" data-edit="campaigns:${c.rowId}">
+    <div class="top"><div class="avatar" style="background:linear-gradient(135deg,#ec4899,#8b5cf6)">${ic('megaphone')}</div>
+      <div class="li-body"><div class="li-title">${esc(c.name)}</div><div class="li-sub">${esc(c.platform || '')} · ${campRange(c)}</div></div>${campBadge(c)}</div>
+    <div class="row" style="gap:6px">${c.countriesList.map(x => `<span class="tag">${ic('map-pin')}${esc(x)}</span>`).join('') || '<span class="muted small">بدون دول محددة</span>'}</div>
+    ${c.state === 'active' ? `<div><div class="progress"><span style="width:${c.elapsed / c.totalDays * 100}%"></span></div><div class="money-row" style="margin-top:6px"><span>اليوم ${c.elapsed} من ${c.totalDays}</span><span>فاضل ${c.daysLeft} يوم</span></div></div>` : ''}
+    <div class="kv kv3"><div><small>صرفت${c.spentEstimated ? ' (الميزانية)' : ''}</small><b>${I.fmt(c.spentEGP)}</b></div><div><small>جابت</small><b>${I.fmt(c.revenueEGP)}</b></div><div><small>الربح</small><b style="color:${c.profitEGP >= 0 ? 'var(--good-text)' : 'var(--critical)'}">${I.fmt(c.profitEGP)}</b></div></div>
+    <div class="row between">${roiBadge(c) || '<span></span>'}${c.state !== 'scheduled' ? `<button class="btn sm primary" data-cinc="${c.rowId}">${ic('plus')} ضيف إيراد</button>` : ''}</div>
+  </div>`;
+}
+
+VIEWS.campaigns = {
+  title: () => 'حملاتي الإعلانية',
+  sub: () => 'كل حملة: صرفت فيها كام وجابتلك كام',
+  render() {
+    if (!S.campaigns.length) return emptyState('megaphone', 'مفيش حملات لسه', 'سجّل كل إعلان بتشغله: الدول، الميزانية، والمدة. وكل ما فلوس تيجي منه ضيفها، وهتعرف الإعلان كسبان ولا خسران وأنهي حملة أحسن.', `<button class="btn primary" data-act="new-campaign">${ic('plus')} ابدأ أول حملة</button>`);
+    const cs = [...S.campaigns].sort((a, b) => b.startDate - a.startDate);
+    const running = cs.filter(c => c.state === 'active' || c.state === 'scheduled');
+    const spent = sum(cs, c => c.spentEGP), rev = sum(cs, c => c.revenueEGP);
+    const byCountry = {};
+    S.incomes.forEach(i => { const k = i.country || 'غير محدد'; byCountry[k] = (byCountry[k] || 0) + i.amountEGP; });
+    const countries = Object.entries(byCountry).sort((a, b) => b[1] - a[1]), maxC = Math.max(1, ...countries.map(c => c[1]));
+    return `<div class="grid g-4">
+      ${kpi({ icon: 'radio', cls: 'i2', label: 'حملات شغالة', value: cs.filter(c => c.state === 'active').length, foot: `${cs.length} حملة إجمالاً` })}
+      ${kpi({ icon: 'flame', cls: 'i3', label: 'صرفت على الإعلانات', value: I.fmt(spent), unit: 'ج.م' })}
+      ${kpi({ icon: 'banknote', cls: 'i1', label: 'جالك من الإعلانات', value: I.fmt(rev), unit: 'ج.م', foot: `ربح ${I.money(rev - spent)}` })}
+      ${kpi({ icon: 'gauge', cls: 'i4', label: 'كل 1 جنيه إعلان رجّع', value: spent ? (rev / spent).toFixed(1) : '—', unit: 'جنيه', foot: spent ? `العائد ${I.pct((rev - spent) / spent * 100)}` : '' })}
+    </div>
+    ${running.length ? `<h2 class="section-title">${ic('radio')} الحملات الشغالة</h2><div class="project-grid">${running.map(campaignCard).join('')}</div>` : ''}
+    <div class="grid g-main" style="margin-top:16px">
+      <div class="card"><div class="card-head"><h3>${ic('chart-column')} الصرف مقابل العائد لكل حملة</h3>${legend([['العائد', '--s1'], ['الصرف', '--s2']])}</div><div class="chart-box"><canvas id="cChart" aria-label="الصرف مقابل العائد لكل حملة"></canvas></div></div>
+      <div class="card"><div class="card-head"><h3>${ic('globe-2')} الفلوس جت منين</h3><span class="sub">حسب الدولة</span></div>
+        ${countries.map(([c, v]) => `<div class="hbar"><span>${esc(c)}</span><div class="track"><span style="width:${v / maxC * 100}%;background:var(--s1)"></span></div><b class="num small">${I.fmt(v)}</b></div>`).join('') || '<p class="muted">لما تضيف إيرادات هيظهر هنا أكتر دولة بتجيبلك فلوس.</p>'}
+      </div>
+    </div>
+    <h2 class="section-title">${ic('history')} كل الحملات</h2>
+    <div class="card"><div class="table-wrap"><table class="data"><thead><tr><th>الحملة</th><th>المدة</th><th>الدول</th><th>الصرف</th><th>العائد</th><th>الربح</th><th>العائد %</th></tr></thead><tbody>
+      ${cs.map(c => `<tr data-edit="campaigns:${c.rowId}" style="cursor:pointer"><td>${esc(c.name)} ${c.state === 'active' ? campBadge(c) : ''}</td><td>${campRange(c)}</td><td>${esc(c.countriesList.join('، '))}</td><td class="n">${I.fmt(c.spentEGP)}${c.spentEstimated ? '*' : ''}</td><td class="n">${I.fmt(c.revenueEGP)}</td><td class="n" style="color:${c.profitEGP >= 0 ? 'var(--good-text)' : 'var(--critical)'}">${I.fmt(c.profitEGP)}</td><td class="n">${roiBadge(c) || '—'}</td></tr>`).join('')}
+    </tbody></table></div><p class="muted small" style="margin-bottom:0">* محسوب على الميزانية كاملة لحد ما تسجّل المصروف الفعلي من مدير الإعلانات. كل المبالغ بالجنيه.</p></div>`;
+  },
+  after() {
+    if (!S.campaigns.length) return;
+    const cs = [...S.campaigns].filter(c => c.state !== 'scheduled').sort((a, b) => a.startDate - b.startDate).slice(-10), c = colors();
+    mkChart('cChart', { type: 'bar', data: { labels: cs.map(x => I.short(x.name, 16)), datasets: [
+      { label: 'العائد', data: cs.map(x => Math.round(x.revenueEGP)), backgroundColor: c.s1, borderRadius: 4, borderSkipped: 'start', maxBarThickness: 26 },
+      { label: 'الصرف', data: cs.map(x => Math.round(x.spentEGP)), backgroundColor: c.s2, borderRadius: 4, borderSkipped: 'start', maxBarThickness: 26 },
+    ] }, options: baseOpts() });
+  },
+};
+
+function openCampaign(key) {
+  const c = S.campaigns.find(x => x.rowId === key || x.id === key);
+  if (!c) return;
+  const prev = S.campaigns.filter(x => x.startDate < c.startDate && x.spentEGP && x.state !== 'scheduled').sort((a, b) => b.startDate - a.startDate)[0];
+  const cur = c.currency || 'جنيه';
+  const good = c.revenueEGP && c.roas >= 1;
+  const verdict = !c.revenueEGP
+    ? { tone: c.state === 'scheduled' ? 'info' : 'warning', icon: 'hourglass', title: c.state === 'scheduled' ? 'الحملة لسه ما بدأتش' : 'لسه مفيش إيراد متسجل من الحملة دي', text: 'كل ما عميل يجيلك منها ويدفع، دوس "ضيف إيراد" وسجّل المبلغ.' }
+    : good
+      ? { tone: 'good', icon: 'trophy', title: `الحملة كسبانة: كل 1 جنيه صرفته رجّعلك ${c.roas.toFixed(1)} جنيه`, text: `صافي ربح ${I.money(c.profitEGP)} من ${c.clients || 'عدة'} ${c.clients === 1 ? 'عميل' : 'عملاء'}.` }
+      : { tone: 'warning', icon: 'trending-down', title: `الحملة لحد دلوقتي خسرانة ${I.money(-c.profitEGP)}`, text: c.state === 'active' ? 'لسه فيه وقت: جرّب تغيّر الإعلان أو الاستهداف، أو ركّز الميزانية على الدولة اللي جابت أكتر.' : 'قارنها بأحسن حملة عندك (الدول والإعلان والمنصة) قبل الحملة الجاية.' };
+  const countries = Object.entries(c.byCountry).sort((a, b) => b[1] - a[1]), maxC = Math.max(1, ...countries.map(x => x[1]));
+  openSheet({
+    title: `${ic('megaphone')} ${esc(c.name)}`,
+    body: `
+      <div class="row" style="margin-bottom:10px">${campBadge(c)}<span class="tag">${ic('monitor-smartphone')}${esc(c.platform || '—')}</span>${c.countriesList.map(x => `<span class="tag">${ic('map-pin')}${esc(x)}</span>`).join('')}</div>
+      <p class="muted small" style="margin:0">${campRange(c)} · ${c.totalDays} يوم${c.state === 'active' ? ` · اليوم ${c.elapsed} · فاضل ${c.daysLeft} يوم` : ''}</p>
+      ${c.state === 'active' ? `<div class="progress" style="margin-top:10px"><span style="width:${c.elapsed / c.totalDays * 100}%"></span></div>` : ''}
+      <div class="result-grid">
+        ${result('الميزانية', `${I.fmt(c.budgetN)} ${cur}`)}
+        ${result(`صرفت${c.spentEstimated ? ' (الميزانية)' : ''}`, `${I.fmt(c.spentN)} ${cur}`)}
+        ${result('جابتلك', I.money(c.revenueEGP), true)}
+        ${result('صافي الربح', I.money(c.profitEGP))}
+        ${result('العائد ROI', c.roi == null ? '—' : I.pct(c.roi))}
+        ${result('كل 1 جنيه رجّع', c.roas == null ? '—' : c.roas.toFixed(2))}
+        ${result('عملاء منها', c.clients)}
+        ${result('تكلفة العميل', c.cpa == null ? '—' : I.money(c.cpa))}
+      </div>
+      <div class="card insight t-${verdict.tone}" style="margin-top:14px;box-shadow:none"><div class="ins-icon tone-${verdict.tone}">${ic(verdict.icon)}</div><div><h4>${esc(verdict.title)}</h4><p>${esc(verdict.text)}</p>
+        ${prev && c.roas != null && prev.roas != null ? `<p class="small" style="margin-top:6px">مقارنة بالحملة اللي قبلها "${esc(prev.name)}": ${prev.roas.toFixed(1)}x ← ${c.roas.toFixed(1)}x <b style="color:${c.roas >= prev.roas ? 'var(--good-text)' : 'var(--critical)'}">(${c.roas >= prev.roas ? 'أحسن' : 'أضعف'})</b></p>` : ''}</div></div>
+      ${c.spentEstimated ? `<p class="small muted">${ic('info')} الصرف محسوب على الميزانية كاملة. لما الحملة تخلص دوس "سجّل المصروف الفعلي" واكتب الرقم من مدير الإعلانات.</p>` : ''}
+      ${countries.length ? `<h4 style="margin:18px 0 8px">${ic('globe-2')} الإيراد حسب الدولة</h4>${countries.map(([k, v]) => `<div class="hbar"><span>${esc(k)}</span><div class="track"><span style="width:${v / maxC * 100}%;background:var(--s1)"></span></div><b class="num small">${I.fmt(v)}</b></div>`).join('')}` : ''}
+      <h4 style="margin:18px 0 8px">${ic('banknote')} الفلوس اللي جت من الحملة (${c.incomes.length})</h4>
+      ${c.incomes.length ? `<div class="list">${c.incomes.map(i => `<div class="list-item" data-edit="incomes:${i.id}"><div class="avatar" style="background:linear-gradient(135deg,#10b981,#0fb5d4)">${ic('banknote')}</div><div class="li-body"><div class="li-title">${esc(i.client || 'عميل')}</div><div class="li-sub">${fmtDate(i.dateObj) || esc(i.date)}${i.country ? ' · ' + esc(i.country) : ''}${i.notes ? ' · ' + esc(i.notes) : ''}</div></div><div class="li-end"><b>${esc(i.amount)} ${esc(i.currency || '')}</b></div></div>`).join('')}</div>` : '<p class="muted small">لسه مفيش.</p>'}
+      ${c.notes ? `<h4 style="margin:18px 0 8px">${ic('sticky-note')} ملاحظات</h4><p class="muted" style="white-space:pre-wrap">${esc(c.notes)}</p>` : ''}`,
+    foot: `${c.state !== 'scheduled' ? `<button class="btn primary" id="cInc">${ic('plus')} ضيف إيراد</button>` : ''}
+      <button class="btn" id="cSpent">${ic('flame')} سجّل المصروف الفعلي</button>
+      ${c.state === 'active' ? `<button class="btn" id="cStop">${ic('circle-pause')} وقّف الحملة</button>` : c.state === 'stopped' ? `<button class="btn" id="cResume">${ic('circle-play')} رجّعها شغالة</button>` : ''}
+      <button class="btn ghost" id="cEdit">${ic('pencil')} تعديل</button>`,
+  });
+  $('#cInc') && ($('#cInc').onclick = () => openIncomeForm(c.rowId));
+  $('#cEdit').onclick = () => openCampaignForm(c);
+  $('#cStop') && ($('#cStop').onclick = async () => { if (confirm('توقيف الحملة؟ هتفضل إيراداتها محفوظة.') && await save('campaigns', 'update', c._row, { status: 'موقوفة' }, checkFor('campaigns', c))) openCampaign(c.rowId); });
+  $('#cResume') && ($('#cResume').onclick = async () => { if (await save('campaigns', 'update', c._row, { status: '' }, checkFor('campaigns', c))) openCampaign(c.rowId); });
+  $('#cSpent').onclick = () => {
+    openSheet({
+      title: `${ic('flame')} المصروف الفعلي — ${esc(c.name)}`,
+      body: `<div class="form"><div class="field full"><label>${ic('coins')} صرفت كام لحد دلوقتي؟ (${esc(cur)})</label><input id="spIn" inputmode="decimal" value="${esc(c.spent || Math.round(c.spentN))}"><div class="hint">الرقم ده موجود في مدير الإعلانات (Ads Manager) — خانة "المبلغ الذي تم إنفاقه".</div></div></div>`,
+      foot: `<button class="btn primary" id="spSave">${ic('check')} حفظ</button><button class="btn ghost" id="spBack">رجوع</button>`,
+    });
+    $('#spBack').onclick = () => openCampaign(c.rowId);
+    $('#spSave').onclick = async () => { const v = D.toLatin($('#spIn').value).replace(/[^\d.]/g, ''); if (await save('campaigns', 'update', c._row, { spent: v }, checkFor('campaigns', c))) openCampaign(c.rowId); };
+  };
+}
+
+function openCampaignForm(item = null) {
+  const today = new Date(), start = item?.startDate || today;
+  const end = item?.endDate || new Date(today.getFullYear(), today.getMonth(), today.getDate() + 13);
+  let picked = new Set(item?.countriesList || ['مصر', 'السعودية']);
+  openSheet({
+    title: `${ic('megaphone')} ${item ? 'تعديل الحملة' : 'حملة إعلانية جديدة'}`,
+    body: `<form class="form" id="cForm" onsubmit="return false">
+      <div class="field full"><label>${ic('megaphone')} اسم الحملة *</label><input name="name" placeholder="مثلاً: حملة النشر على أمازون — أكتوبر" value="${esc(item?.name || '')}"></div>
+      <div class="field"><label>${ic('monitor-smartphone')} المنصة</label><select name="platform">${D.PLATFORMS.map(p => `<option ${(item?.platform || D.PLATFORMS[0]) === p ? 'selected' : ''}>${p}</option>`).join('')}</select></div>
+      <div class="field"><label>${ic('wallet')} الميزانية</label><div class="row" style="flex-wrap:nowrap"><input name="budget" inputmode="decimal" value="${esc(item?.budget || '')}" style="flex:1"><select name="currency" style="width:auto">${D.MONEY_UNITS.map(u => `<option ${(item?.currency || 'جنيه') === u ? 'selected' : ''}>${u}</option>`).join('')}</select></div></div>
+      <div class="field full"><label>${ic('globe-2')} الدول المستهدفة</label><div class="chips" id="cCountries" style="flex-wrap:wrap">${D.COUNTRIES.map(x => `<button type="button" class="chip ${picked.has(x) ? 'on' : ''}" data-country="${x}">${x}</button>`).join('')}</div></div>
+      <div class="field"><label>${ic('calendar')} تاريخ البداية</label><input type="date" name="start" value="${D.isoDay(start)}"></div>
+      <div class="field"><label>${ic('calendar-check')} تاريخ النهاية</label><input type="date" name="end" value="${D.isoDay(end)}"></div>
+      <div class="field full"><div class="chips">${[[7, 'أسبوع'], [14, 'أسبوعين'], [30, 'شهر'], [60, 'شهرين']].map(([n, l]) => `<button type="button" class="chip" data-dur="${n}">${ic('timer')}${l}</button>`).join('')}</div></div>
+      <div class="field"><label>${ic('flame')} المصروف الفعلي (اختياري)</label><input name="spent" inputmode="decimal" value="${esc(item?.spent || '')}" placeholder="سيبه فاضي ويتحسب على الميزانية"></div>
+      <div class="field full"><label>${ic('sticky-note')} ملاحظات (الإعلان، الجمهور، الهدف)</label><textarea name="notes" style="min-height:60px">${esc(item?.notes || '')}</textarea></div>
+    </form>`,
+    foot: `<button class="btn primary" id="cSave">${ic('check')} ${item ? 'حفظ' : 'شغّل الحملة'}</button><button class="btn ghost" id="cCancel">إلغاء</button>${item ? `<button class="btn danger" id="cDel" style="margin-inline-start:auto">${ic('trash-2')} حذف</button>` : ''}`,
+  });
+  const form = $('#cForm'), f = n => form.querySelector(`[name="${n}"]`);
+  $$('[data-country]', form).forEach(b => b.onclick = () => { b.classList.toggle('on'); picked.has(b.dataset.country) ? picked.delete(b.dataset.country) : picked.add(b.dataset.country); });
+  $$('[data-dur]', form).forEach(b => b.onclick = () => { const s = new Date((f('start').value || D.isoDay(new Date())) + 'T00:00'); s.setDate(s.getDate() + Number(b.dataset.dur) - 1); f('end').value = D.isoDay(s); });
+  $('#cCancel').onclick = () => item ? openCampaign(item.rowId) : closeSheet();
+  $('#cDel') && ($('#cDel').onclick = () => confirmDelete('campaigns', item));
+  $('#cSave').onclick = async () => {
+    const name = f('name').value.trim();
+    if (!name) return toast('اكتب اسم الحملة', 'err');
+    if (!picked.size) return toast('اختار دولة واحدة على الأقل', 'err');
+    if (f('end').value < f('start').value) return toast('تاريخ النهاية قبل البداية', 'err');
+    const day = v => D.sheetDay(new Date(v + 'T00:00'));
+    const values = {
+      name, platform: f('platform').value, countries: [...picked].join('، '), start: day(f('start').value), end: day(f('end').value),
+      budget: D.toLatin(f('budget').value).replace(/[^\d.]/g, ''), currency: f('currency').value, spent: D.toLatin(f('spent').value).replace(/[^\d.]/g, ''), notes: f('notes').value.trim(),
+    };
+    $('#cSave').disabled = true;
+    const ok = item
+      ? await save('campaigns', 'update', item._row, values, checkFor('campaigns', item))
+      : await save('campaigns', 'add', null, { id: 'C' + Date.now().toString(36).toUpperCase(), date: D.sheetDay(new Date()), status: '', ...values });
+    if (!ok) { $('#cSave').disabled = false; return; }
+    if (item) {
+      // لو اسم الحملة اتغير نحدّث اسمها في الإيرادات كمان
+      if (item.name !== name) for (const i of item.incomes) await save('campaignIncome', 'update', i._row, { campaign: name }, checkFor('campaignIncome', i));
+      const np = S.campaigns.find(x => x._row === item._row); np ? openCampaign(np.rowId) : closeSheet();
+    } else { closeSheet(); confetti(); }
+  };
+}
+
+function openIncomeForm(campKey, item = null) {
+  const c = S.campaigns.find(x => x.rowId === campKey || x.id === (item?.campaignId || campKey)) || S.campaigns.find(x => x.name === item?.campaign);
+  const projs = [...S.projects].sort((a, b) => (b.date?.getTime() || 0) - (a.date?.getTime() || 0));
+  const countryList = [...new Set([...(c?.countriesList || []), ...D.COUNTRIES])];
+  openSheet({
+    title: `${ic('banknote')} ${item ? 'تعديل إيراد' : 'فلوس جت من الحملة'}`,
+    body: `<form class="form" id="iForm" onsubmit="return false">
+      <div class="field full"><label>${ic('megaphone')} الحملة</label><select name="camp">${S.campaigns.map(x => `<option value="${x.rowId}" ${x === c ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></div>
+      <div class="field full"><label>${ic('folder-kanban')} العميل من الشيت (اختياري)</label><select name="proj"><option value="">— اختار عميل أو اكتب الاسم تحت —</option>${projs.map(p => `<option value="${p._row}">${esc(p.displayName)} — ${esc(I.short(p.project, 35))} (${I.fmt(p.totalEGP / p.rate)} ${unitOf(p)})</option>`).join('')}</select></div>
+      <div class="field full"><label>${ic('user')} اسم العميل</label><input name="client" value="${esc(item?.client || '')}"></div>
+      <div class="field"><label>${ic('coins')} المبلغ</label><input name="amount" inputmode="decimal" value="${esc(item?.amount || '')}"></div>
+      <div class="field"><label>${ic('banknote')} العملة</label><select name="currency">${D.MONEY_UNITS.map(u => `<option ${(item?.currency || 'جنيه') === u ? 'selected' : ''}>${u}</option>`).join('')}</select></div>
+      <div class="field"><label>${ic('map-pin')} الدولة</label><select name="country"><option value="">—</option>${countryList.map(x => `<option ${(item?.country || c?.countriesList[0] || '') === x ? 'selected' : ''}>${x}</option>`).join('')}</select></div>
+      <div class="field"><label>${ic('calendar')} التاريخ</label><input type="date" name="date" value="${D.isoDay(item?.dateObj || new Date())}"></div>
+      <div class="field full"><label>${ic('sticky-note')} ملاحظات</label><input name="notes" value="${esc(item?.notes || '')}" placeholder="مثلاً: مقدم / الباقي / مشروع ترجمة"></div>
+    </form>`,
+    foot: `<button class="btn primary" id="iSave">${ic('check')} حفظ</button><button class="btn ghost" id="iCancel">رجوع</button>${item ? `<button class="btn danger" id="iDel" style="margin-inline-start:auto">${ic('trash-2')} حذف</button>` : ''}`,
+  });
+  const form = $('#iForm'), f = n => form.querySelector(`[name="${n}"]`);
+  f('proj').onchange = () => {
+    const p = S.projects.find(x => x._row === Number(f('proj').value)); if (!p) return;
+    f('client').value = p.displayName; f('currency').value = unitOf(p);
+    f('amount').value = Math.round((p.paidEGP || p.totalEGP) / p.rate) || '';
+    const ctry = countryOf(p.nationality); if (ctry) f('country').value = ctry;
+  };
+  const back = () => { const cc = S.campaigns.find(x => x.rowId === f('camp').value); cc ? openCampaign(cc.rowId) : closeSheet(); };
+  $('#iCancel').onclick = back;
+  $('#iDel') && ($('#iDel').onclick = async () => { if (confirm('تمسح الإيراد ده؟') && await save('campaignIncome', 'delete', item._row, {}, checkFor('campaignIncome', item))) back(); });
+  $('#iSave').onclick = async () => {
+    const cc = S.campaigns.find(x => x.rowId === f('camp').value);
+    const amount = D.toLatin(f('amount').value).replace(/[^\d.]/g, '');
+    if (!cc) return toast('اختار الحملة', 'err');
+    if (!Number(amount)) return toast('اكتب المبلغ', 'err');
+    const values = { date: D.sheetDay(new Date(f('date').value + 'T00:00')), campaignId: cc.id, campaign: cc.name, client: f('client').value.trim(), country: f('country').value, amount, currency: f('currency').value, notes: f('notes').value.trim() };
+    $('#iSave').disabled = true;
+    const ok = item ? await save('campaignIncome', 'update', item._row, values, checkFor('campaignIncome', item)) : await save('campaignIncome', 'add', null, values);
+    if (ok) { const nc = S.campaigns.find(x => x.id === cc.id); nc ? openCampaign(nc.rowId) : closeSheet(); if (!item) confetti(); } else $('#iSave').disabled = false;
+  };
+}
 
 /* ── الأدوات ── */
 const TRIMS = [['5 × 8', 5, 8], ['5.25 × 8', 5.25, 8], ['5.5 × 8.5', 5.5, 8.5], ['6 × 9', 6, 9], ['6.14 × 9.21', 6.14, 9.21], ['7 × 10', 7, 10], ['8.5 × 11', 8.5, 11]];
@@ -1208,6 +1898,7 @@ VIEWS.setup = {
       </ol>
       <div class="card-head" style="margin-top:20px"><h3>${ic('refresh-ccw')} لو عدّلت الكود بعدين</h3></div>
       <p class="muted small">Deploy ← Manage deployments ← ✏️ ← Version: New version ← Deploy. الرابط بيفضل زي ما هو.</p>
+      <p class="muted small">أول مرة بعد إضافة صور التحويلات، جوجل هيطلب صلاحية على Google Drive عشان يحفظ الصور في فولدر "KDP Hub - صور التحويلات" جنب الشيت. وافق عليها (Advanced ← Go to project ← Allow).</p>
     </div>
     <div class="card span-2">
       <div class="card-head"><h3>${ic('smartphone')} 3) تثبيت الأبلكيشن على الموبايل واللابتوب</h3></div>
@@ -1267,12 +1958,13 @@ function readForm(schema, root) {
 
 function openForm(sheet, item = null, prefill = {}) {
   const schema = SCHEMAS[sheet].filter(f => !f.auto || item);
-  const vals = item || prefill;
+  const defaults = { subscriptions: { currency: 'دولار', cycle: 'شهري', status: 'شغال' }, installments: { status: 'شغال', paidCount: '0' }, expenses: { kind: 'شغل' } }[sheet] || {};
+  const vals = item || { ...defaults, ...prefill };
   const clientNames = [...new Set(S.projects.map(p => p.displayName))];
   openSheet({
     title: `${ic(item ? 'pencil' : SHEET_ICONS[sheet])} ${item ? 'تعديل' : 'إضافة'} ${LABELS[sheet]}`,
     body: `<form class="form" id="fForm" onsubmit="return false">${schema.map(f => fieldHTML(f, vals[f.key])).join('')}</form><datalist id="dl-clients">${clientNames.map(n => `<option value="${esc(n)}">`).join('')}</datalist>
-      ${!hasRemote() ? `<p class="muted small" style="margin-top:14px">${ic('info')} الأبلكيشن مش مربوط بالشيت لسه — البيانات هتتحفظ على الجهاز ده بس.</p>` : sheet !== 'clients' && !(S.raw[sheet] || []).length ? `<p class="muted small" style="margin-top:14px">${ic('info')} أول مرة تضيف هنا هيتعمل تاب جديد اسمه "${esc({ tasks: 'المهام', expenses: 'المصروفات', ads: 'حملات Amazon Ads', notes: 'ملاحظات وأفكار' }[sheet])}" في نفس الشيت.</p>` : ''}`,
+      ${!hasRemote() ? `<p class="muted small" style="margin-top:14px">${ic('info')} الأبلكيشن مش مربوط بالشيت لسه — البيانات هتتحفظ على الجهاز ده بس.</p>` : sheet !== 'clients' && !(S.raw[sheet] || []).length ? `<p class="muted small" style="margin-top:14px">${ic('info')} أول مرة تضيف هنا هيتعمل تاب جديد اسمه "${esc({ tasks: 'المهام', expenses: 'المصروفات', ads: 'حملات Amazon Ads', notes: 'ملاحظات وأفكار', subscriptions: 'الاشتراكات', installments: 'الأقساط', otherIncome: 'دخل إضافي' }[sheet])}" في نفس الشيت.</p>` : ''}`,
     foot: `<button class="btn primary" id="fSave">${ic('check')} حفظ${hasRemote() ? ' في الشيت' : ''}</button><button class="btn ghost" id="fCancel">إلغاء</button>${item ? `<button class="btn danger" id="fDel" style="margin-inline-start:auto">${ic('trash-2')} حذف</button>` : ''}`,
   });
   const form = $('#fForm');
@@ -1308,12 +2000,18 @@ function openForm(sheet, item = null, prefill = {}) {
 }
 
 function openQuickAdd() {
-  const opts = [['clients', 'عميل / مشروع جديد', 'user-plus', 'يتسجل في شيت ادارة العمل'], ['tasks', 'مهمة', 'square-check', 'بتذكير في ميعادها'], ['expenses', 'مصروف', 'receipt', 'اشتراكات، إعلانات، فريلانسرز'], ['ads', 'سجل حملة Amazon Ads', 'target', 'إنفاق ومبيعات'], ['notes', 'ملاحظة أو فكرة', 'notebook-pen', 'أي حاجة عايز تفتكرها'], ['quote', 'عرض سعر لعميل', 'file-badge', 'يتحسب ويتبعت واتساب']];
+  const opts = [['clients', 'عميل / مشروع جديد', 'user-plus', 'يتسجل في شيت ادارة العمل'], ['payment', 'صورة تحويل من عميل', 'receipt-text', 'تتحفظ وتأكدها'], ['campaign', 'حملة إعلانية جديدة', 'megaphone', 'تتابع صرفها وعائدها'], ['tasks', 'مهمة', 'square-check', 'بتذكير في ميعادها'], ['expenses', 'مصروف (شغل أو شخصي)', 'receipt', 'فريلانسرز، بيت، مواصلات…'], ['subscriptions', 'اشتراك برنامج', 'repeat', 'Canva، ChatGPT، Claude…'], ['installments', 'قسط', 'calendar-range', 'لابتوب، موبايل، جمعية…'], ['otherIncome', 'دخل تاني', 'hand-coins', 'مرتب، أرباح كتب…'], ['ads', 'سجل حملة Amazon Ads', 'target', 'إنفاق ومبيعات'], ['notes', 'ملاحظة أو فكرة', 'notebook-pen', 'أي حاجة عايز تفتكرها'], ['quote', 'عرض سعر لعميل', 'file-badge', 'يتحسب ويتبعت واتساب']];
   openSheet({
     title: `${ic('plus')} إضافة`,
     body: `<div class="more-grid">${opts.map(([k, l, i, s]) => `<button class="card more-tile" data-q="${k}" style="text-align:right;cursor:pointer"><div class="kpi-icon">${ic(i)}</div><b>${l}</b><small>${s}</small></button>`).join('')}</div>`,
   });
-  $$('#sheet [data-q]').forEach(b => b.onclick = () => { const k = b.dataset.q; if (k === 'quote') { closeSheet(); location.hash = '#/tools?t=quote'; } else openForm(k); });
+  $$('#sheet [data-q]').forEach(b => b.onclick = () => {
+    const k = b.dataset.q;
+    if (k === 'quote') { closeSheet(); location.hash = '#/tools?t=quote'; }
+    else if (k === 'payment') openPaymentForm();
+    else if (k === 'campaign') openCampaignForm();
+    else openForm(k);
+  });
 }
 
 /* ═════════════ مساعدة التثبيت على الموبايل ═════════════ */
@@ -1405,12 +2103,25 @@ function confetti() {
 
 // كليكات عامة (فتح مشروع، تعديل عنصر، إضافة، عميل جديد)
 document.addEventListener('click', e => {
+  const rcv = e.target.closest('[data-rcpt-view]');
+  if (rcv) { viewReceipt(rcv.dataset.rcptView); return; }
+  const cinc = e.target.closest('[data-cinc]');
+  if (cinc) { openIncomeForm(cinc.dataset.cinc); return; }
+  if (e.target.closest('[data-act="new-payment"]')) { openPaymentForm(); return; }
+  if (e.target.closest('[data-act="new-campaign"]')) { openCampaignForm(); return; }
   const open = e.target.closest('[data-open]');
   if (open) { openProject(open.dataset.open); return; }
   const edit = e.target.closest('[data-edit]');
-  if (edit) { const [sheet, id] = edit.dataset.edit.split(':'); const item = S[sheet].find(x => x.id === id); if (item) openForm(sheet, item); return; }
+  if (edit) {
+    const [sheet, id] = edit.dataset.edit.split(':');
+    if (sheet === 'payments') { const p = S.payments.find(x => x.id === id); if (p) openPaymentDetail(p); return; }
+    if (sheet === 'campaigns') { openCampaign(id); return; }
+    if (sheet === 'incomes') { const x = S.incomes.find(i => i.id === id); if (x) openIncomeForm(null, x); return; }
+    const item = S[sheet].find(x => x.id === id); if (item) openForm(sheet, item);
+    return;
+  }
   const add = e.target.closest('[data-add]');
-  if (add) { openForm(add.dataset.add); return; }
+  if (add) { openForm(add.dataset.add, null, add.dataset.kind ? { kind: add.dataset.kind } : add.dataset.pre ? JSON.parse(add.dataset.pre) : {}); return; }
   if (e.target.closest('[data-act="new-client"]')) openForm('clients');
   if (e.target.closest('[data-act="install-help"]')) openInstallHelp();
   if (e.target.closest('[data-act="install-hide"]')) { D.LS.set('installHintHidden', true); renderView(true); }

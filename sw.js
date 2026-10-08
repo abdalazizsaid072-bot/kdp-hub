@@ -1,5 +1,5 @@
 // KDP Hub Service Worker — تشغيل بدون نت + إشعارات في الخلفية
-const CACHE = 'kdphub-v4';
+const CACHE = 'kdphub-v5';
 const SHELL = ['./', 'index.html', 'styles.css', 'js/app.js', 'js/data.js', 'js/insights.js', 'js/templates.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/badge-96.png'];
 
 self.addEventListener('install', e => {

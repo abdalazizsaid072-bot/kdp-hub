@@ -429,5 +429,21 @@ code { background: var(--surface-2); border: 1px solid var(--border); border-rad
 .money-details .list { padding: 4px 10px; }
 .money-details .list-item { padding: 8px 4px; }
 
+/* Money plan */
+.plan-flow { position: relative; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+.plan-flow > div { background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.22); border-radius: 14px; padding: 8px 14px; }
+.plan-flow small { display: block; opacity: .85; font-size: 12px; }
+.plan-flow b { font-family: var(--font-head); font-size: 18px; }
+.plan-flow > span { opacity: .8; }
+.env-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+.env-icon { width: 34px; height: 34px; border-radius: 11px; display: grid; place-items: center; color: #fff; }
+.env-icon svg { width: 18px; height: 18px; }
+.env-num { margin-bottom: 8px; }
+.env-num b { font-family: var(--font-head); font-size: 24px; }
+.env-num small { color: var(--muted); }
+.alloc { border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px; background: var(--surface-2); display: flex; flex-direction: column; gap: 10px; }
+.alloc-parts { display: flex; flex-wrap: wrap; gap: 6px; }
+#planSettings summary::-webkit-details-marker { display: none; }
+
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 @media (forced-colors: active) { .progress > span, .hbar .track span { background: Highlight; } }

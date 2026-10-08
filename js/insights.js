@@ -1,6 +1,6 @@
 // التحليلات والأفكار الذكية والتذكيرات — كلها بتتحسب من بيانات الشيت
 
-import { SERVICES, STATUS, monthKey, startOfDay, daysBetween, parseDate, parseMoney, toLatin, whatsappNumber, isoDay, toEGP, PERSONAL_CATS } from './data.js';
+import { SERVICES, STATUS, monthKey, startOfDay, daysBetween, parseDate, parseMoney, toLatin, whatsappNumber, isoDay, toEGP, PERSONAL_CATS, BUCKETS, DEFAULT_PLAN, FUN_CATS } from './data.js';
 
 export const fmt = n => new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(Math.round(n || 0));
 export const money = n => `${fmt(n)} ج.م`;
@@ -169,6 +169,98 @@ export function enrichInstallment(i, settings) {
 export function enrichOtherIncome(x, settings) {
   const amountN = numOf(x.amount);
   return { ...x, sheet: 'otherIncome', id: 'o' + x._row, dateObj: parseDate(x.date), amountN, amountEGP: toEGP(amountN, x.currency, settings) };
+}
+
+/* ─────────── نظام إدارة الفلوس: الخزنات ─────────── */
+
+export function planOf(rows) {
+  const r = rows?.[0], p = { ...DEFAULT_PLAN, _row: r?._row || null };
+  if (r) Object.keys(DEFAULT_PLAN).forEach(k => { if (String(r[k] ?? '').trim() !== '') p[k] = numOf(r[k]); });
+  return p;
+}
+
+export function enrichSaving(x, settings) {
+  const amountN = numOf(x.amount), b = String(x.bucket || '');
+  const bucketKey = /طوارئ/.test(b) ? 'emergency' : (!b || /^ادخار/.test(b)) ? 'savings' : 'goal';
+  const type = String(x.type || '');
+  return {
+    ...x, sheet: 'savings', id: 'v' + x._row, dateObj: parseDate(x.date), amountN, amountEGP: toEGP(amountN, x.currency, settings),
+    bucketKey, goal: bucketKey === 'goal' ? b.replace(/^هدف:\s*/, '') : null,
+    isDeposit: /إيداع|حطيت|تحويل/.test(type), isWithdraw: /سحب/.test(type),
+  };
+}
+
+export function enrichGoal(g, savings, settings) {
+  const targetN = numOf(g.target), targetEGP = toEGP(targetN, g.currency, settings), deadline = parseDate(g.deadline);
+  const mine = savings.filter(s => s.bucketKey === 'goal' && s.goal === g.name);
+  const saved = mine.reduce((a, s) => a + (s.isDeposit ? s.amountEGP : s.isWithdraw ? -s.amountEGP : 0), 0);
+  const today = startOfDay();
+  const monthsLeft = deadline ? Math.max(mIndex(deadline) - mIndex(today), 1) : null;
+  return {
+    ...g, sheet: 'goals', id: 'g' + g._row, targetN, targetEGP, deadline, saved, left: Math.max(targetEGP - saved, 0),
+    done: /خلص|اتحقق|تم/.test(g.status || '') || saved >= targetEGP, monthsLeft, perMonth: monthsLeft ? Math.max(targetEGP - saved, 0) / monthsLeft : null,
+  };
+}
+
+export function enrichWish(w, settings) {
+  const priceN = numOf(w.price), dateObj = parseDate(w.date);
+  const s = String(w.status || '');
+  const statusKey = /اشتري/.test(s) ? 'bought' : /لغي|اتلغ|مش محتاج/.test(s) ? 'cancelled' : 'waiting';
+  const waited = dateObj ? daysBetween(dateObj, startOfDay()) : 0;
+  return { ...w, sheet: 'wishlist', id: 'w' + w._row, dateObj, priceN, priceEGP: toEGP(priceN, w.currency, settings), statusKey, waited, ready: waited >= 2 };
+}
+
+const BUCKET_KEYS = ['emergency', 'savings', 'ops', 'living', 'fun'];
+
+// ميزانية الشهر: الدخل الفعلي → الالتزامات الثابتة الأول → الباقي يتقسم على الخزنات بالنسب
+export function budgetPlan(key, d, plan, mode = 'auto') {
+  const mc = monthClose(key, d, mode);
+  const g = k => mc.groups.find(x => x.key === k).total;
+  const fixed = g('subs') + g('inst');
+  const afterFixed = Math.max(mc.income - fixed, 0);
+  const inM = dt => dt && monthKey(dt) === key;
+  const personal = d.expenses.filter(e => e.kindKey === 'personal' && inM(e.dateObj));
+  const funUsed = personal.filter(e => FUN_CATS.includes(e.category)).reduce((a, e) => a + e.amountEGP, 0);
+  const livingUsed = personal.reduce((a, e) => a + e.amountEGP, 0) - funUsed;
+  const deposited = b => d.savings.filter(s => inM(s.dateObj) && s.isDeposit && (b === 'savings' ? s.bucketKey !== 'emergency' : s.bucketKey === 'emergency')).reduce((a, s) => a + s.amountEGP, 0);
+  const used = { emergency: deposited('emergency'), savings: deposited('savings'), ops: g('ads') + g('work'), living: livingUsed, fun: funUsed };
+  const envelopes = BUCKET_KEYS.map(k => {
+    const limit = afterFixed * (plan[k] || 0) / 100;
+    return { key: k, ...BUCKETS[k], pct: plan[k] || 0, limit, used: used[k], left: limit - used[k], ratio: limit ? used[k] / limit : used[k] ? 9 : 0 };
+  });
+  const today = startOfDay(), isCurrent = key === monthKey(today);
+  const md = keyToDate(key), daysLeft = isCurrent ? dim(md.getFullYear(), md.getMonth()) - today.getDate() + 1 : 0;
+  const env = k => envelopes.find(e => e.key === k);
+  const spendLeft = Math.max(env('living').left, 0) + Math.max(env('fun').left, 0);
+  return {
+    key, mc, income: mc.income, fixed, afterFixed, envelopes, isCurrent, daysLeft,
+    daily: isCurrent && daysLeft ? spendLeft / daysLeft : null, spendLeft,
+    pctSum: BUCKET_KEYS.reduce((a, k) => a + (plan[k] || 0), 0), fixedCovered: mc.income >= fixed,
+  };
+}
+
+// خزنة الطوارئ: هدفها كام شهر من المصاريف الأساسية
+export function emergencyStatus(d, plan) {
+  const bal = b => d.savings.filter(s => b === 'emergency' ? s.bucketKey === 'emergency' : s.bucketKey === 'savings').reduce((a, s) => a + (s.isDeposit ? s.amountEGP : s.isWithdraw ? -s.amountEGP : 0), 0);
+  const fixedMonthly = d.subs.reduce((a, s) => a + s.monthlyEGP, 0) + d.installments.filter(i => !i.done).reduce((a, i) => a + i.monthlyEGP, 0);
+  const months = [1, 2, 3].map(n => monthKey(new Date(new Date().getFullYear(), new Date().getMonth() - n, 1)));
+  const living = months.map(k => d.expenses.filter(e => e.kindKey === 'personal' && e.dateObj && monthKey(e.dateObj) === k).reduce((a, e) => a + e.amountEGP, 0));
+  const withData = living.filter(Boolean);
+  const avgLiving = withData.length ? withData.reduce((a, b) => a + b, 0) / withData.length : 0;
+  const essentials = fixedMonthly + avgLiving;
+  const emergency = bal('emergency');
+  return { emergency, savings: bal('savings'), essentials, target: essentials * (plan.emergencyMonths || 3), monthsCovered: essentials ? emergency / essentials : null, avgLiving, fixedMonthly };
+}
+
+// الفلوس اللي دخلت ولسه متقسمتش على الخزنات (الشهر ده واللي قبله)
+export function unallocatedIncome(d) {
+  const keys = [monthKey(new Date()), monthKey(new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1))];
+  const refs = new Set(d.savings.map(s => s.ref).filter(Boolean));
+  const recent = dt => dt && keys.includes(monthKey(dt));
+  return [
+    ...d.payments.filter(p => p.statusKey === 'confirmed' && recent(p.dateObj)).map(p => ({ ref: `pay:${p._row}`, label: `تحويل من ${p.client || 'عميل'}`, amount: p.amountEGP, date: p.dateObj })),
+    ...d.otherIncome.filter(x => recent(x.dateObj)).map(x => ({ ref: `inc:${x._row}`, label: x.source || 'دخل', amount: x.amountEGP, date: x.dateObj })),
+  ].filter(x => !refs.has(x.ref) && x.amount > 0).sort((a, b) => b.date - a.date);
 }
 
 /* ─────────── تقفيل الشهر: دخلت كام وراحت فين ─────────── */
@@ -359,6 +451,13 @@ export function insights(projects, k, extras = {}) {
     }
   }
 
+  if (extras.money) {
+    const { em, bp } = extras.money;
+    if (em.essentials && (em.monthsCovered ?? 0) < (extras.money.plan.emergencyMonths || 3)) out.push({ icon: 'shield', tone: (em.monthsCovered ?? 0) < 1 ? 'warning' : 'info', title: `خزنة الطوارئ بتغطي ${(em.monthsCovered ?? 0).toFixed(1)} شهر من مصاريفك`, text: `الهدف ${extras.money.plan.emergencyMonths} شهور = ${money(em.target)}. أول ما أي فلوس تدخل حوّل نصيب الطوارئ لحساب أو محفظة منفصلة قبل ما تصرف.`, action: { label: 'خطة الفلوس', href: '#/money?t=plan' } });
+    const over = bp.envelopes.filter(e => e.kind === 'spend' && e.limit > 0 && e.ratio >= 1);
+    if (over.length) out.push({ icon: 'siren', tone: 'critical', title: `عديت ميزانية: ${over.map(e => e.label).join('، ')}`, text: 'وقّف الصرف من الخزنة دي لحد الشهر الجاي، أو خده من "فلوس حرة" لو لسه فيها.', action: { label: 'خطة الفلوس', href: '#/money?t=plan' } });
+  }
+
   const subs = (extras.subs || []).filter(s => !s.cancelled);
   if (subs.length) {
     const monthly = subs.reduce((a, s) => a + s.monthlyEGP, 0);
@@ -486,6 +585,18 @@ export function reminders(projects, tasks, settings, extra = {}, horizon = 7) {
       if (before >= today) out.push({ id: `inst-2-${i.id}-${isoDay(i.nextDue)}`, fireOn: isoDay(before), kind: 'money', icon: 'calendar-range', tone: 'warning', href: '#/money?t=inst', title: `قسط ${i.name} بعد يومين`, body: money });
       out.push({ id: `inst-0-${i.id}-${isoDay(i.nextDue)}`, fireOn: isoDay(i.nextDue), kind: 'money', icon: 'calendar-range', tone: 'warning', href: '#/money?t=inst', title: `النهارده ميعاد قسط ${i.name}`, body: money });
     }
+  });
+
+  // نظام الخزنات: تحذير لما خزنة تقرب تخلص، وفلوس دخلت ومتقسمتش، وحاجات عدّى عليها يومين في قائمة الاستنى
+  const bp = extra.budget;
+  if (bp) bp.envelopes.filter(e => e.kind === 'spend' && e.limit > 0).forEach(e => {
+    if (e.ratio >= 1) out.push({ id: `env-100-${e.key}-${bp.key}`, fireOn: todayIso, kind: 'money', icon: 'siren', tone: 'critical', href: '#/money?t=plan', title: `خزنة ${e.label} خلصت`, body: `صرفت ${fmt(e.used)} من ${fmt(e.limit)} ج.م. أي صرف زيادة هيتاخد من فلوس الادخار.` });
+    else if (e.ratio >= 0.8) out.push({ id: `env-80-${e.key}-${bp.key}`, fireOn: todayIso, kind: 'money', icon: 'triangle-alert', tone: 'warning', href: '#/money?t=plan', title: `صرفت ${Math.round(e.ratio * 100)}% من خزنة ${e.label}`, body: `فاضل ${fmt(e.left)} ج.م لحد آخر الشهر.` });
+  });
+  (extra.unallocated || []).slice(0, 3).forEach(u => out.push({ id: `alloc-${u.ref}`, fireOn: todayIso, kind: 'money', icon: 'split', tone: 'info', href: '#/money?t=plan', title: `دخلك ${fmt(u.amount)} ج.م — قسّمه على الخزنات`, body: `${u.label}. حوّل نصيب الطوارئ والادخار الأول قبل ما تصرف.` }));
+  (extra.wishlist || []).filter(w => w.statusKey === 'waiting').forEach(w => {
+    const on = w.dateObj ? addDays(w.dateObj, 2) : today;
+    if (within(on)) out.push({ id: `wish-${w.id}`, fireOn: isoDay(on < today ? today : on), kind: 'money', icon: 'hourglass', tone: 'info', href: '#/money?t=plan', title: `عدّى يومين على "${w.item}" — لسه محتاجه؟`, body: `${w.price} ${w.currency || 'جنيه'}. لو لغيته الفلوس دي تفضل معاك.` });
   });
 
   // آخر يوم في الشهر: تذكير بتقفيل الشهر

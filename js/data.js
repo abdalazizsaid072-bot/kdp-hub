@@ -144,6 +144,22 @@ SCHEMAS.installments = [
   { key: 'status', label: 'الحالة', type: 'select', icon: 'activity', options: ['شغال', 'خلص'] },
   { key: 'notes', label: 'ملاحظات', type: 'textarea', icon: 'sticky-note', full: true },
 ];
+SCHEMAS.goals = [
+  { key: 'name', label: 'الهدف', type: 'text', icon: 'flag', required: true, full: true, list: ['لابتوب جديد للشغل', 'موبايل جديد', 'جواز', 'عربية', 'شقة', 'عمرة / حج', 'كورس أو شهادة'] },
+  { key: 'target', label: 'المبلغ المطلوب', type: 'money', icon: 'wallet', required: true },
+  { key: 'currency', label: 'العملة', type: 'select', icon: 'banknote', options: MONEY_UNITS },
+  { key: 'deadline', label: 'عايز توصله إمتى', type: 'date', icon: 'calendar-check' },
+  { key: 'status', label: 'الحالة', type: 'select', icon: 'activity', options: ['شغال', 'اتحقق'] },
+  { key: 'notes', label: 'ملاحظات', type: 'textarea', icon: 'sticky-note', full: true },
+];
+SCHEMAS.savings = [
+  { key: 'bucket', label: 'الخزنة', type: 'text', icon: 'piggy-bank', required: true, list: ['طوارئ', 'ادخار'] },
+  { key: 'type', label: 'النوع', type: 'select', icon: 'arrow-left-right', options: ['إيداع', 'سحب'] },
+  { key: 'amount', label: 'المبلغ', type: 'money', icon: 'wallet', required: true },
+  { key: 'currency', label: 'العملة', type: 'select', icon: 'banknote', options: MONEY_UNITS },
+  { key: 'date', label: 'التاريخ', type: 'date', icon: 'calendar' },
+  { key: 'notes', label: 'ملاحظات', type: 'textarea', icon: 'sticky-note', full: true, hint: 'مثلاً: حطيتهم في حساب البنك / محفظة فودافون كاش التانية' },
+];
 SCHEMAS.otherIncome = [
   { key: 'date', label: 'التاريخ', type: 'date', icon: 'calendar' },
   { key: 'source', label: 'المصدر', type: 'text', icon: 'hand-coins', required: true, list: INCOME_SOURCES },
@@ -159,6 +175,50 @@ export function toEGP(amount, unit, settings) {
   if (/دولار|\$|usd/i.test(u)) return amount * (Number(settings.usdRate) || 50);
   return amount;
 }
+
+/* ─────────── تابات الشيت ─────────── */
+// كود الشيت (نسخة 5) عام: الأبلكيشن هو اللي بيقوله اسم التاب وعناوينه، والتاب بيتعمل لوحده أول مرة
+export const CODE_VERSION_NEEDED = 5;
+export const SHEET_DEFS = {
+  tasks:    { title: 'المهام', headers: ['التاريخ', 'المهمة', 'العميل', 'الموعد', 'الأولوية', 'الحالة', 'ملاحظات'], keys: ['date', 'title', 'client', 'due', 'priority', 'status', 'notes'] },
+  expenses: { title: 'المصروفات', headers: ['التاريخ', 'البند', 'الفئة', 'المبلغ', 'ملاحظات', 'النوع (شغل/شخصي)'], keys: ['date', 'title', 'category', 'amount', 'notes', 'kind'] },
+  ads:      { title: 'حملات Amazon Ads', headers: ['التاريخ', 'الكتاب / العميل', 'الحملة', 'النوع', 'الإنفاق $', 'المبيعات $', 'الطلبات', 'النقرات', 'مرات الظهور', 'ملاحظات'], keys: ['date', 'book', 'campaign', 'type', 'spend', 'sales', 'orders', 'clicks', 'impressions', 'notes'] },
+  notes:    { title: 'ملاحظات وأفكار', headers: ['التاريخ', 'العنوان', 'التصنيف', 'التفاصيل'], keys: ['date', 'title', 'category', 'body'] },
+  payments: { title: 'المدفوعات', headers: ['التاريخ', 'العميل', 'المشروع', 'رقم صف المشروع', 'المبلغ', 'العملة', 'طريقة الدفع', 'صورة التحويل', 'الحالة', 'اتسجل في حساب العميل', 'ملاحظات'], keys: ['date', 'client', 'project', 'projectRow', 'amount', 'currency', 'method', 'receipt', 'status', 'applied', 'notes'] },
+  campaigns: { title: 'حملاتي الإعلانية', headers: ['رقم الحملة', 'التاريخ', 'اسم الحملة', 'المنصة', 'الدول', 'تاريخ البداية', 'تاريخ النهاية', 'الميزانية', 'العملة', 'المصروف الفعلي', 'الحالة', 'ملاحظات'], keys: ['id', 'date', 'name', 'platform', 'countries', 'start', 'end', 'budget', 'currency', 'spent', 'status', 'notes'] },
+  campaignIncome: { title: 'إيرادات الحملات', headers: ['التاريخ', 'رقم الحملة', 'اسم الحملة', 'العميل', 'الدولة', 'المبلغ', 'العملة', 'ملاحظات'], keys: ['date', 'campaignId', 'campaign', 'client', 'country', 'amount', 'currency', 'notes'] },
+  subscriptions: { title: 'الاشتراكات', headers: ['البرنامج', 'التصنيف', 'السعر', 'العملة', 'التجديد', 'تاريخ الدفع', 'الحالة', 'تاريخ الإلغاء', 'طريقة الدفع', 'ملاحظات'], keys: ['name', 'category', 'price', 'currency', 'cycle', 'start', 'status', 'cancelDate', 'method', 'notes'] },
+  installments: { title: 'الأقساط', headers: ['القسط', 'المبلغ الكلي', 'القسط الشهري', 'عدد الشهور', 'تاريخ أول قسط', 'اتدفع كام قسط', 'آخر شهر اتدفع', 'العملة', 'الحالة', 'ملاحظات'], keys: ['name', 'total', 'monthly', 'months', 'start', 'paidCount', 'lastPaid', 'currency', 'status', 'notes'] },
+  otherIncome: { title: 'دخل إضافي', headers: ['التاريخ', 'المصدر', 'المبلغ', 'العملة', 'ملاحظات'], keys: ['date', 'source', 'amount', 'currency', 'notes'] },
+  // نظام إدارة الفلوس
+  budget:   { title: 'خطة الفلوس', headers: ['الطوارئ %', 'الادخار والأهداف %', 'تشغيل الشغل %', 'المعيشة %', 'فلوس حرة %', 'حد الاستنى (ج.م)', 'شهور الطوارئ', 'آخر تعديل'], keys: ['emergency', 'savings', 'ops', 'living', 'fun', 'waitLimit', 'emergencyMonths', 'updated'] },
+  savings:  { title: 'الادخار والطوارئ', headers: ['التاريخ', 'الخزنة', 'النوع', 'المبلغ', 'العملة', 'المصدر', 'ملاحظات'], keys: ['date', 'bucket', 'type', 'amount', 'currency', 'ref', 'notes'] },
+  goals:    { title: 'الأهداف', headers: ['الهدف', 'المبلغ المطلوب', 'العملة', 'آخر ميعاد', 'الحالة', 'ملاحظات'], keys: ['name', 'target', 'currency', 'deadline', 'status', 'notes'] },
+  wishlist: { title: 'قائمة الاستنى', headers: ['التاريخ', 'الحاجة', 'السعر', 'العملة', 'الخزنة', 'الحالة', 'تاريخ القرار', 'ملاحظات'], keys: ['date', 'item', 'price', 'currency', 'bucket', 'status', 'decided', 'notes'] },
+};
+
+// الكود الجديد بيرجع التابات بعناوينها، وهنا بنحولها لنفس شكل البيانات اللي الأبلكيشن متعود عليه
+function tabRows(tab, def) {
+  if (!tab) return [];
+  const idx = def.headers.map(h => tab.headers.indexOf(h));
+  return tab.rows.map(r => {
+    const o = { _row: r._row };
+    def.keys.forEach((k, i) => { o[k] = idx[i] >= 0 ? (r.cells[idx[i]] ?? '') : ''; });
+    return o;
+  });
+}
+
+/* ─────────── خزنات الفلوس ─────────── */
+
+export const BUCKETS = {
+  emergency: { label: 'الطوارئ', icon: 'shield', color: '--s6', kind: 'save', hint: 'فلوس متتلمسش غير في مصيبة' },
+  savings:   { label: 'الادخار والأهداف', icon: 'piggy-bank', color: '--s3', kind: 'save', hint: 'لأهدافك: جهاز، جواز، بيت…' },
+  ops:       { label: 'تشغيل الشغل', icon: 'briefcase', color: '--s1', kind: 'spend', hint: 'إعلانات، فريلانسرز، إنترنت، أدوات' },
+  living:    { label: 'المعيشة', icon: 'house', color: '--s4', kind: 'spend', hint: 'بيت، أكل، مواصلات، صحة، أهل' },
+  fun:       { label: 'فلوس حرة', icon: 'party-popper', color: '--s5', kind: 'spend', hint: 'خروج، لبس، حاجات حلوة — من غير إحساس بالذنب' },
+};
+export const DEFAULT_PLAN = { emergency: 10, savings: 15, ops: 20, living: 45, fun: 10, waitLimit: 500, emergencyMonths: 3 };
+export const FUN_CATS = ['خروج وترفيه', 'لبس', 'مصاريف شخصية تانية'];
 
 /* ─────────── فهم النصوص ─────────── */
 
@@ -305,6 +365,9 @@ export async function fetchRemote(settings) {
   const res = await fetch(u.toString(), { redirect: 'follow' });
   const json = await res.json();
   if (!json.ok) throw new Error(json.error || 'خطأ من الشيت');
+  if (json.tabs) Object.entries(SHEET_DEFS).forEach(([k, def]) => { json[k] = tabRows(json.tabs[def.title], def); });
+  json.version = json.version || 1; // النسخ القديمة من كود الشيت مكانتش بتبعت رقم نسخة
+  delete json.tabs;
   return json;
 }
 
@@ -381,6 +444,19 @@ export function demoData() {
     otherIncome: [
       { _row: 2, date: d(1, 28), source: 'مرتب شغل KDP', amount: '6000', currency: 'جنيه', notes: '' },
       { _row: 3, date: d(0, 1), source: 'مرتب شغل KDP', amount: '6000', currency: 'جنيه', notes: '' },
+    ],
+    budget: [],
+    savings: [
+      { _row: 2, date: d(1, 28), bucket: 'طوارئ', type: 'إيداع', amount: '600', currency: 'جنيه', ref: 'inc:2', notes: 'من المرتب' },
+      { _row: 3, date: d(1, 28), bucket: 'ادخار', type: 'إيداع', amount: '900', currency: 'جنيه', ref: 'inc:2', notes: 'من المرتب' },
+      { _row: 4, date: d(1, 29), bucket: 'هدف: لابتوب جديد للشغل', type: 'إيداع', amount: '1500', currency: 'جنيه', ref: '', notes: '' },
+    ],
+    goals: [
+      { _row: 2, name: 'لابتوب جديد للشغل', target: '40000', currency: 'جنيه', deadline: sheetDay(new Date(y, m + 8, 1)), status: '', notes: '' },
+    ],
+    wishlist: [
+      { _row: 2, date: sheetDay(new Date(y, m, new Date().getDate() - 3)), item: 'سماعة بلوتوث', price: '1800', currency: 'جنيه', bucket: 'فلوس حرة', status: 'مستني', decided: '', notes: '' },
+      { _row: 3, date: sheetDay(new Date(y, m - 1, 12)), item: 'ساعة ذكية', price: '4500', currency: 'جنيه', bucket: 'فلوس حرة', status: 'لغيته', decided: d(1, 15), notes: '' },
     ],
     ads: [
       { _row: 2, date: d(1, 10), book: 'حسام فؤاد', campaign: 'Auto - Launch', type: 'Sponsored Products - Auto', spend: '42', sales: '96', orders: '12', clicks: '160', impressions: '38000', notes: '' },

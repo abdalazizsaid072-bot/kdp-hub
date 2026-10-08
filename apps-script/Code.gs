@@ -1,24 +1,31 @@
 /**
- * KDP Hub — الجسر بين الأبلكيشن وشيت "ادارة العمل" على جوجل درايف.
+ * KDP Hub — الجسر بين الأبلكيشن وشيت "ادارة العمل" على جوجل درايف.   (نسخة الكود: 5)
  *
- * طريقة التركيب (مرة واحدة بس):
- *  1) افتح شيت "ادارة العمل" ← من القائمة: Extensions (الإضافات) ← Apps Script
- *  2) امسح أي كود موجود والصق الملف ده كله، وغيّر API_KEY تحت لكلمة سر من اختيارك
- *  3) Deploy ← New deployment ← النوع Web app
- *       Execute as: Me   |   Who has access: Anyone
- *  4) انسخ الرابط اللي بينتهي بـ /exec وحطه في الأبلكيشن (الإعدادات) مع نفس كلمة السر
- *  5) (اختياري) شغّل الدالة setupDailyDigest مرة واحدة عشان يوصلك إيميل ملخص كل صباح
+ * النسخة دي "عامة": أي قسم جديد في الأبلكيشن بيعمل التاب بتاعه في الشيت لوحده،
+ * فمش هتحتاج تحدّث الكود ده تاني مع أي إضافة جديدة.
+ *
+ * طريقة التركيب أو التحديث:
+ *  1) افتح شيت "ادارة العمل" ← الإضافات (Extensions) ← Apps Script
+ *  2) امسح الكود الموجود والصق الملف ده كله، واكتب كلمة السر بتاعتك في السطر اللي تحت
+ *  3) أول مرة: نشر ← عملية نشر جديدة ← تطبيق ويب | التنفيذ بصفتك: أنا | الوصول: أي شخص
+ *     تحديث: نشر ← إدارة عمليات النشر ← ✏️ ← الإصدار: إصدار جديد ← نشر
+ *  4) (اختياري) شغّل الدالة setupDailyDigest مرة واحدة عشان يوصلك إيميل ملخص كل صباح
+ *
+ * بعد أول تشغيل، كلمة السر بتتحفظ جوه المشروع، فلو لصقت الكود تاني بعدين
+ * ونسيت تكتبها هيفضل شغال بالكلمة المحفوظة.
  */
 
-// ⚠️ غيّر دي لكلمة سر خاصة بيك (حروف وأرقام إنجليزي) — ولازم تكتب نفس الكلمة في الأبلكيشن
+// ⚠️ اكتب هنا كلمة السر بتاعتك (حروف وأرقام إنجليزي) — نفس الكلمة اللي في الأبلكيشن
 const API_KEY = 'CHANGE-ME-2026';
 
-// ساعة إرسال الملخص اليومي على الإيميل (بتوقيت الشيت)
-const DIGEST_HOUR = 9;
+const CODE_VERSION = 5;
+const DIGEST_HOUR = 9; // ساعة إرسال الملخص اليومي على الإيميل
+const RECEIPTS_FOLDER = 'KDP Hub - صور التحويلات'; // فولدر صور التحويلات على درايف (بيتعمل جنب الشيت)
+const PLACEHOLDER = 'CHANGE-ME-2026';
 
-/* ─────────── تعريف الشيتات ─────────── */
+/* ─────────── الشيت الأساسي (العملاء) ─────────── */
 
-// الشيت الأساسي (العملاء) موجود عندك بالفعل — بنتعرف على الأعمدة من أسماء العناوين
+// بنتعرف على الأعمدة من أسماء العناوين، فترتيب الأعمدة عندك مش مهم
 const CLIENT_FIELDS = [
   { key: 'amazon',      match: h => h.indexOf('amazon') > -1 || h.indexOf('النشر') > -1 },
   { key: 'status',      match: h => h.indexOf('الحال') === 0 },
@@ -33,34 +40,8 @@ const CLIENT_FIELDS = [
   { key: 'deposit',     match: h => h.indexOf('العربون') > -1 },
   { key: 'remaining',   match: h => h.indexOf('الباق') > -1 },
   { key: 'deadline',    match: h => h.indexOf('موعد') > -1 },
+  { key: 'images',      match: h => h.indexOf('صور') > -1 }, // عمود "الصور": بيتحط فيه لينك صورة كل تحويل
 ];
-
-// شيتات إضافية بيعملها الكود تلقائياً أول ما تضيف فيها حاجة من الأبلكيشن
-const EXTRA_SHEETS = {
-  tasks:    { title: 'المهام',            headers: ['التاريخ', 'المهمة', 'العميل', 'الموعد', 'الأولوية', 'الحالة', 'ملاحظات'],
-              keys:    ['date', 'title', 'client', 'due', 'priority', 'status', 'notes'] },
-  expenses: { title: 'المصروفات',         headers: ['التاريخ', 'البند', 'الفئة', 'المبلغ', 'ملاحظات', 'النوع (شغل/شخصي)'],
-              keys:    ['date', 'title', 'category', 'amount', 'notes', 'kind'] },
-  subscriptions: { title: 'الاشتراكات',   headers: ['البرنامج', 'التصنيف', 'السعر', 'العملة', 'التجديد', 'تاريخ الدفع', 'الحالة', 'تاريخ الإلغاء', 'طريقة الدفع', 'ملاحظات'],
-              keys:    ['name', 'category', 'price', 'currency', 'cycle', 'start', 'status', 'cancelDate', 'method', 'notes'] },
-  installments: { title: 'الأقساط',       headers: ['القسط', 'المبلغ الكلي', 'القسط الشهري', 'عدد الشهور', 'تاريخ أول قسط', 'اتدفع كام قسط', 'آخر شهر اتدفع', 'العملة', 'الحالة', 'ملاحظات'],
-              keys:    ['name', 'total', 'monthly', 'months', 'start', 'paidCount', 'lastPaid', 'currency', 'status', 'notes'] },
-  otherIncome: { title: 'دخل إضافي',      headers: ['التاريخ', 'المصدر', 'المبلغ', 'العملة', 'ملاحظات'],
-              keys:    ['date', 'source', 'amount', 'currency', 'notes'] },
-  ads:      { title: 'حملات Amazon Ads',  headers: ['التاريخ', 'الكتاب / العميل', 'الحملة', 'النوع', 'الإنفاق $', 'المبيعات $', 'الطلبات', 'النقرات', 'مرات الظهور', 'ملاحظات'],
-              keys:    ['date', 'book', 'campaign', 'type', 'spend', 'sales', 'orders', 'clicks', 'impressions', 'notes'] },
-  notes:    { title: 'ملاحظات وأفكار',    headers: ['التاريخ', 'العنوان', 'التصنيف', 'التفاصيل'],
-              keys:    ['date', 'title', 'category', 'body'] },
-  payments: { title: 'المدفوعات',         headers: ['التاريخ', 'العميل', 'المشروع', 'رقم صف المشروع', 'المبلغ', 'العملة', 'طريقة الدفع', 'صورة التحويل', 'الحالة', 'اتسجل في حساب العميل', 'ملاحظات'],
-              keys:    ['date', 'client', 'project', 'projectRow', 'amount', 'currency', 'method', 'receipt', 'status', 'applied', 'notes'] },
-  campaigns: { title: 'حملاتي الإعلانية', headers: ['رقم الحملة', 'التاريخ', 'اسم الحملة', 'المنصة', 'الدول', 'تاريخ البداية', 'تاريخ النهاية', 'الميزانية', 'العملة', 'المصروف الفعلي', 'الحالة', 'ملاحظات'],
-              keys:    ['id', 'date', 'name', 'platform', 'countries', 'start', 'end', 'budget', 'currency', 'spent', 'status', 'notes'] },
-  campaignIncome: { title: 'إيرادات الحملات', headers: ['التاريخ', 'رقم الحملة', 'اسم الحملة', 'العميل', 'الدولة', 'المبلغ', 'العملة', 'ملاحظات'],
-              keys:    ['date', 'campaignId', 'campaign', 'client', 'country', 'amount', 'currency', 'notes'] },
-};
-
-// اسم الفولدر اللي بتتحفظ فيه صور التحويلات على جوجل درايف (بيتعمل جنب الشيت)
-const RECEIPTS_FOLDER = 'KDP Hub - صور التحويلات';
 
 /* ─────────── نقاط الاتصال ─────────── */
 
@@ -68,9 +49,8 @@ function doGet(e) {
   return handle_(function () {
     checkKey_(e.parameter.key);
     if (e.parameter.action === 'file') return readReceipt_(e.parameter.id);
-    const out = { ok: true, updated: new Date().toISOString(), clients: readClients_() };
-    Object.keys(EXTRA_SHEETS).forEach(function (k) { out[k] = readExtra_(k); });
-    return out;
+    const clients = clientsTarget_();
+    return { ok: true, version: CODE_VERSION, updated: new Date().toISOString(), clients: readRows_(clients), tabs: readAllTabs_(clients.sheet.getSheetId()) };
   });
 }
 
@@ -81,16 +61,18 @@ function doPost(e) {
     const lock = LockService.getScriptLock();
     lock.waitLock(20000);
     try {
-      const target = body.sheet === 'clients' ? clientsTarget_() : extraTarget_(body.sheet, true);
-      // صورة التحويل بتتحفظ على درايف ولينكها بيتكتب في الشيت
+      const target = body.sheet === 'clients' ? clientsTarget_() : tabTarget_(body.def, true);
+      body.values = body.values || {};
+      // صورة التحويل بتتحفظ على درايف، ولينكها بيتكتب في التاب وفي عمود "الصور" بتاع العميل
       if (body.file && body.file.b64) {
-        body.values = body.values || {};
-        body.values.receipt = saveReceipt_(body.file).url;
+        const saved = saveReceipt_(body.file);
+        body.values.receipt = saved.url;
+        if (body.link && body.link.row) linkReceiptToClient_(body.link.row, body.link.check, saved.url);
       }
-      const receipt = body.values && body.values.receipt;
-      if (body.action === 'add')    return { ok: true, row: addRow_(target, body.values || {}), receipt: receipt };
-      if (body.action === 'update') { verifyRow_(target, body.row, body.check); updateRow_(target, body.row, body.values || {}); return { ok: true, receipt: receipt }; }
-      if (body.action === 'delete') { verifyRow_(target, body.row, body.check); target.sheet.deleteRow(body.row); return { ok: true }; }
+      const receipt = body.values.receipt;
+      if (body.action === 'add')    return { ok: true, version: CODE_VERSION, row: addRow_(target, body.values), receipt: receipt };
+      if (body.action === 'update') { verifyRow_(target, body.row, body.check); updateRow_(target, body.row, body.values); return { ok: true, version: CODE_VERSION, receipt: receipt }; }
+      if (body.action === 'delete') { verifyRow_(target, body.row, body.check); target.sheet.deleteRow(body.row); return { ok: true, version: CODE_VERSION }; }
       throw new Error('عملية غير معروفة: ' + body.action);
     } finally {
       lock.releaseLock();
@@ -100,12 +82,22 @@ function doPost(e) {
 
 function handle_(fn) {
   let result;
-  try { result = fn(); } catch (err) { result = { ok: false, error: String(err.message || err) }; }
+  try { result = fn(); } catch (err) { result = { ok: false, version: CODE_VERSION, error: String(err.message || err) }; }
   return ContentService.createTextOutput(JSON.stringify(result)).setMimeType(ContentService.MimeType.JSON);
 }
 
+// كلمة السر بتتحفظ في خصائص المشروع أول مرة، عشان أي لصق للكود بعد كده ميحتاجش تكتبها تاني
+function apiKey_() {
+  const props = PropertiesService.getScriptProperties();
+  const saved = props.getProperty('API_KEY');
+  if (API_KEY && API_KEY !== PLACEHOLDER && API_KEY !== saved) { props.setProperty('API_KEY', API_KEY); return API_KEY; }
+  return saved || API_KEY;
+}
+
 function checkKey_(key) {
-  if (key !== API_KEY) throw new Error('كلمة السر غلط — راجع API_KEY في الكود والإعدادات في الأبلكيشن');
+  const k = apiKey_();
+  if (!k || k === PLACEHOLDER) throw new Error('لسه مكتبتش كلمة السر في كود الشيت (السطر بتاع API_KEY)');
+  if (key !== k) throw new Error('كلمة السر غلط — لازم تكون نفس الكلمة اللي في كود الشيت');
 }
 
 /* ─────────── القراءة ─────────── */
@@ -125,7 +117,7 @@ function clientsTarget_() {
         top[r].forEach(function (h, i) {
           const n = norm_(h);
           if (!n) return;
-          const f = CLIENT_FIELDS.find(function (f) { return !(f.key in colMap) && f.match(n); });
+          const f = CLIENT_FIELDS.find(function (x) { return !(x.key in colMap) && x.match(n); });
           if (f) colMap[f.key] = i + 1;
         });
         return { sheet: sh, headerRow: r + 1, colMap: colMap, width: lastCol };
@@ -135,9 +127,9 @@ function clientsTarget_() {
   throw new Error('مش لاقي عمود "اسم العميل" في الشيت');
 }
 
-function extraTarget_(name, create) {
-  const def = EXTRA_SHEETS[name];
-  if (!def) throw new Error('شيت غير معروف: ' + name);
+// أي تاب تاني: العناوين في الصف الأول، والأبلكيشن هو اللي بيعرف أنهي عنوان يعني إيه
+function tabTarget_(def, create) {
+  if (!def || !def.title || !def.headers || !def.keys) throw new Error('بيانات التاب ناقصة — اقفل الأبلكيشن وافتحه تاني');
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sh = ss.getSheetByName(def.title);
   if (!sh) {
@@ -146,24 +138,35 @@ function extraTarget_(name, create) {
     sh.getRange(1, 1, 1, def.headers.length).setValues([def.headers]).setFontWeight('bold').setBackground('#ede9fe');
     sh.setFrozenRows(1);
     sh.setRightToLeft(true);
-  } else if (create && sh.getLastColumn() < def.headers.length) {
-    // تاب قديم ناقصه أعمدة جديدة: بنضيف العناوين الناقصة على الشمال بس من غير ما نلمس البيانات
-    const have = Math.max(sh.getLastColumn(), 1);
-    sh.getRange(1, have + 1, 1, def.headers.length - have).setValues([def.headers.slice(have)]).setFontWeight('bold').setBackground('#ede9fe');
   }
+  const have = sh.getRange(1, 1, 1, Math.max(sh.getLastColumn(), 1)).getDisplayValues()[0].map(function (h) { return String(h).trim(); });
+  while (have.length && !have[have.length - 1]) have.pop();
   const colMap = {};
-  def.keys.forEach(function (k, i) { colMap[k] = i + 1; });
-  return { sheet: sh, headerRow: 1, colMap: colMap, width: def.keys.length };
+  def.keys.forEach(function (k, i) {
+    const title = String(def.headers[i]).trim();
+    let idx = have.indexOf(title);
+    if (idx === -1) {
+      // عنوان جديد مش موجود في التاب: بنضيفه في آخر الأعمدة من غير ما نلمس البيانات
+      idx = have.length;
+      have.push(title);
+      sh.getRange(1, idx + 1).setValue(title).setFontWeight('bold').setBackground('#ede9fe');
+    }
+    colMap[k] = idx + 1;
+  });
+  return { sheet: sh, headerRow: 1, colMap: colMap, width: have.length };
 }
 
-// بيرجع التواريخ بصيغة ISO والباقي زي ما هو ظاهر في الشيت بالظبط
+function cellValue_(v, shown, tz) {
+  return v instanceof Date ? Utilities.formatDate(v, tz, 'yyyy-MM-dd') : shown;
+}
+
+// العملاء: بيرجعوا بأسماء الخانات (name, total, ...)
 function readRows_(t) {
   const sh = t.sheet;
   const last = sh.getLastRow();
   if (last <= t.headerRow) return [];
   const range = sh.getRange(t.headerRow + 1, 1, last - t.headerRow, t.width);
-  const raw = range.getValues();
-  const shown = range.getDisplayValues();
+  const raw = range.getValues(), shown = range.getDisplayValues();
   const tz = Session.getScriptTimeZone();
   const rows = [];
   for (let r = 0; r < raw.length; r++) {
@@ -171,8 +174,7 @@ function readRows_(t) {
     let empty = true;
     Object.keys(t.colMap).forEach(function (k) {
       const c = t.colMap[k] - 1;
-      const v = raw[r][c];
-      obj[k] = v instanceof Date ? Utilities.formatDate(v, tz, 'yyyy-MM-dd') : shown[r][c];
+      obj[k] = cellValue_(raw[r][c], shown[r][c], tz);
       if (String(obj[k]).trim()) empty = false;
     });
     if (!empty) rows.push(obj);
@@ -180,8 +182,26 @@ function readRows_(t) {
   return rows;
 }
 
-function readClients_() { return readRows_(clientsTarget_()); }
-function readExtra_(name) { const t = extraTarget_(name, false); return t ? readRows_(t) : []; }
+// باقي التابات: بترجع العناوين والصفوف زي ما هي، والأبلكيشن بيفهمها
+function readAllTabs_(skipId) {
+  const out = {};
+  const tz = Session.getScriptTimeZone();
+  SpreadsheetApp.getActiveSpreadsheet().getSheets().forEach(function (sh) {
+    if (sh.getSheetId() === skipId) return;
+    const lastRow = sh.getLastRow(), lastCol = sh.getLastColumn();
+    if (lastRow < 1 || lastCol < 1) return;
+    const range = sh.getRange(1, 1, lastRow, lastCol);
+    const raw = range.getValues(), shown = range.getDisplayValues();
+    const headers = shown[0].map(function (h) { return String(h).trim(); });
+    const rows = [];
+    for (let r = 1; r < raw.length; r++) {
+      const cells = raw[r].map(function (v, c) { return cellValue_(v, shown[r][c], tz); });
+      if (cells.some(function (c) { return String(c).trim(); })) rows.push({ _row: r + 1, cells: cells });
+    }
+    out[sh.getName()] = { headers: headers, rows: rows };
+  });
+  return out;
+}
 
 /* ─────────── الكتابة ─────────── */
 
@@ -189,7 +209,7 @@ function lastDataRow_(t) {
   const sh = t.sheet;
   const last = sh.getLastRow();
   if (last <= t.headerRow) return t.headerRow;
-  const vals = sh.getRange(t.headerRow + 1, 1, last - t.headerRow, t.width).getDisplayValues();
+  const vals = sh.getRange(t.headerRow + 1, 1, last - t.headerRow, Math.max(t.width, 1)).getDisplayValues();
   for (let r = vals.length - 1; r >= 0; r--) {
     if (vals[r].some(function (c) { return String(c).trim(); })) return t.headerRow + 1 + r;
   }
@@ -251,6 +271,18 @@ function saveReceipt_(f) {
   return { id: file.getId(), url: file.getUrl() };
 }
 
+// لينك الصورة بيتضاف لعمود "الصور" في صف العميل (لو العمود موجود)
+function linkReceiptToClient_(row, check, url) {
+  try {
+    const t = clientsTarget_();
+    if (!t.colMap.images) return;
+    verifyRow_(t, row, check);
+    const cell = t.sheet.getRange(row, t.colMap.images);
+    const cur = String(cell.getValue() || '').trim();
+    cell.setValue(cur ? cur + '\n' + url : url);
+  } catch (err) { /* لو الصف اتغير مش هنوقف حفظ التحويل */ }
+}
+
 // الأبلكيشن بيعرض الصورة من هنا — ومسموح بس بملفات فولدر التحويلات
 function readReceipt_(id) {
   const file = DriveApp.getFileById(id);
@@ -288,8 +320,17 @@ function parseDay_(s) {
   return null;
 }
 
+// صفوف تاب كـ { "العنوان": "القيمة" }
+function tabObjects_(title) {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(title);
+  if (!sh || sh.getLastRow() < 2) return [];
+  const vals = sh.getRange(1, 1, sh.getLastRow(), sh.getLastColumn()).getDisplayValues();
+  const h = vals[0].map(function (x) { return String(x).trim(); });
+  return vals.slice(1).map(function (r) { const o = {}; h.forEach(function (k, i) { o[k] = r[i]; }); return o; });
+}
+
 function dailyDigest() {
-  const rows = readClients_();
+  const rows = readRows_(clientsTarget_());
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const soon = [], late = [], waiting = [];
   let receivable = 0;
@@ -307,10 +348,10 @@ function dailyDigest() {
       else if (days <= 2) soon.push(r.name + ' — ' + (days === 0 ? 'النهارده' : 'بعد ' + days + ' يوم'));
     }
   });
-  const pendingPays = readExtra_('payments').filter(function (p) { return /انتظار/.test(p.status); });
+  const pendingPays = tabObjects_('المدفوعات').filter(function (p) { return /انتظار/.test(p['الحالة']); });
   const lines = [
     'صباح الخير 👋 ده ملخص شغلك النهارده من KDP Hub:', '',
-    '🧾 تحويلات مستنية تأكيدك: ' + (pendingPays.length ? pendingPays.map(function (p) { return p.client + ' (' + p.amount + ' ' + p.currency + ')'; }).join('، ') : 'مفيش'),
+    '🧾 تحويلات مستنية تأكيدك: ' + (pendingPays.length ? pendingPays.map(function (p) { return p['العميل'] + ' (' + p['المبلغ'] + ' ' + p['العملة'] + ')'; }).join('، ') : 'مفيش'),
     '⏰ تسليمات قريبة: ' + (soon.length ? '\n  • ' + soon.join('\n  • ') : 'مفيش'),
     '🚨 متأخرات: ' + (late.length ? '\n  • ' + late.join('\n  • ') : 'مفيش'),
     '💰 في انتظار العربون: ' + (waiting.length ? waiting.map(function (r) { return r.name; }).join('، ') : 'مفيش'),

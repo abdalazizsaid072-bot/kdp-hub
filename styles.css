@@ -429,6 +429,12 @@ code { background: var(--surface-2); border: 1px solid var(--border); border-rad
 .money-details .list { padding: 4px 10px; }
 .money-details .list-item { padding: 8px 4px; }
 
+/* Editable message + wallets */
+textarea.msg-edit { width: 100%; min-height: 260px; resize: vertical; color: var(--text); line-height: 1.7; outline: none; }
+textarea.msg-edit:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+#qTplBox summary::-webkit-details-marker { display: none; }
+.wcard .env-num b { font-size: 28px; }
+
 /* Money plan */
 .plan-flow { position: relative; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
 .plan-flow > div { background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.22); border-radius: 14px; padding: 8px 14px; }

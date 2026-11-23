@@ -263,6 +263,64 @@ export function unallocatedIncome(d) {
   ].filter(x => !refs.has(x.ref) && x.amount > 0).sort((a, b) => b.date - a.date);
 }
 
+/* ─────────── محافظي: الرصيد الحقيقي لكل محفظة ─────────── */
+
+const signedNum = v => { const m = toLatin(v).replace(/,/g, '').match(/-?\d+(\.\d+)?/); return m ? Number(m[0]) : 0; };
+const TX_TYPE = t => /دخل|إيداع|ايداع|استلام/.test(t) ? 'in' : /مصروف|دفع|سحب|شراء/.test(t) ? 'out' : /تحويل/.test(t) ? 'transfer' : /تسوية/.test(t) ? 'adjust' : /مطابقة/.test(t) ? 'check' : 'other';
+
+export function enrichWallets(walletsRaw, txRaw) {
+  const today = startOfDay();
+  const txs = txRaw.map(x => ({
+    ...x, sheet: 'walletTx', id: 'wt' + x._row, dateObj: parseDate(x.date) || today, typeKey: TX_TYPE(String(x.type || '')),
+    amountN: Math.abs(signedNum(x.amount)), signedN: signedNum(x.amount), feeN: Math.abs(signedNum(x.fee)),
+    balanceAfterN: String(x.balanceAfter ?? '').trim() !== '' ? signedNum(x.balanceAfter) : null,
+  })).sort((a, b) => a.dateObj - b.dateObj || a._row - b._row);
+
+  // تأثير حركة واحدة على رصيد محفظة معينة
+  const effect = (t, name) => {
+    if (t.typeKey === 'in' && t.wallet === name) return t.amountN - t.feeN;
+    if (t.typeKey === 'out' && t.wallet === name) return -(t.amountN + t.feeN);
+    if (t.typeKey === 'transfer') return (t.wallet === name ? -(t.amountN + t.feeN) : 0) + (t.toWallet === name ? t.amountN : 0);
+    if (t.typeKey === 'adjust' && t.wallet === name) return t.signedN;
+    return 0;
+  };
+  const mk = monthKey(today);
+  const wallets = walletsRaw.map(w => {
+    const openingDate = parseDate(w.openingDate);
+    const mine = txs.filter(t => (t.wallet === w.name || t.toWallet === w.name) && (!openingDate || t.dateObj >= openingDate));
+    let balance = numOf(w.opening);
+    const balanceAt = d => numOf(w.opening) + mine.filter(t => t.dateObj <= d).reduce((a, t) => a + effect(t, w.name), 0);
+    mine.forEach(t => { balance += effect(t, w.name); });
+    const checks = mine.filter(t => t.typeKey === 'check' && t.wallet === w.name);
+    const lastCheck = checks[checks.length - 1] || null;
+    const inMonth = mine.filter(t => monthKey(t.dateObj) === mk);
+    return {
+      ...w, sheet: 'wallets', id: 'wl' + w._row, openingN: numOf(w.opening), openingDate, isSaving: /ادخار|طوارئ/.test(w.purpose || ''),
+      balance, balanceAt, txs: mine, lastCheck, daysSinceCheck: lastCheck ? daysBetween(lastCheck.dateObj, today) : null,
+      monthIn: inMonth.reduce((a, t) => a + Math.max(effect(t, w.name), 0), 0), monthOut: inMonth.reduce((a, t) => a + Math.max(-effect(t, w.name), 0), 0),
+    };
+  });
+  const spend = wallets.filter(w => !w.isSaving), saving = wallets.filter(w => w.isSaving);
+  // رصيد محافظ الصرف آخر 30 يوم (للرسم البياني)
+  const series = Array.from({ length: 30 }, (_, i) => { const d = new Date(today); d.setDate(d.getDate() - 29 + i); d.setHours(23, 59); return { date: d, value: spend.reduce((a, w) => a + w.balanceAt(d), 0) }; });
+  return {
+    wallets, txs, series,
+    spendTotal: spend.reduce((a, w) => a + w.balance, 0), saveTotal: saving.reduce((a, w) => a + w.balance, 0),
+    total: wallets.reduce((a, w) => a + w.balance, 0),
+  };
+}
+
+// الالتزامات اللي لسه هتتدفع الشهر ده (اشتراكات/إيجار/مرتب/أقساط) ومتسجلتش إنها اتدفعت
+export function dueThisMonth(subs, installments, txs) {
+  const today = startOfDay(), key = monthKey(today);
+  const paid = new Set(txs.map(t => t.ref).filter(Boolean));
+  const items = [
+    ...subs.filter(s => !s.cancelled && s.chargeDate(key) && !paid.has(`sub:${s._row}:${key}`) && s.chargeDate(key) >= today).map(s => ({ label: s.name, amount: s.priceEGP, date: s.chargeDate(key) })),
+    ...installments.filter(i => !i.done && !i.paidThisMonth && i.nextDue && monthKey(i.nextDue) === key).map(i => ({ label: i.name, amount: i.monthlyEGP, date: i.nextDue })),
+  ].sort((a, b) => a.date - b.date);
+  return { items, total: items.reduce((a, x) => a + x.amount, 0) };
+}
+
 /* ─────────── تقفيل الشهر: دخلت كام وراحت فين ─────────── */
 
 export function monthClose(key, d, mode = 'auto') {
@@ -298,7 +356,7 @@ export function monthClose(key, d, mode = 'auto') {
     key, useTransfers, hasTransfers: transfers.length > 0, transfersEGP, projectsEGP, clients, fromAds, other, otherItems, income,
     groups: [
       { key: 'ads', label: 'الإعلانات', icon: 'megaphone', color: '--s2', total: ads, items: adsItems },
-      { key: 'subs', label: 'الاشتراكات', icon: 'repeat', color: '--s7', total: subs, items: subsItems },
+      { key: 'subs', label: 'اشتراكات والتزامات', icon: 'repeat', color: '--s7', total: subs, items: subsItems },
       { key: 'work', label: 'مصاريف الشغل', icon: 'briefcase', color: '--s1', total: work, items: workItems },
       { key: 'inst', label: 'الأقساط', icon: 'calendar-range', color: '--s4', total: inst, items: instItems },
       { key: 'personal', label: 'مصاريف شخصية', icon: 'user', color: '--s5', total: personal, items: personalItems },
@@ -597,6 +655,11 @@ export function reminders(projects, tasks, settings, extra = {}, horizon = 7) {
   (extra.wishlist || []).filter(w => w.statusKey === 'waiting').forEach(w => {
     const on = w.dateObj ? addDays(w.dateObj, 2) : today;
     if (within(on)) out.push({ id: `wish-${w.id}`, fireOn: isoDay(on < today ? today : on), kind: 'money', icon: 'hourglass', tone: 'info', href: '#/money?t=plan', title: `عدّى يومين على "${w.item}" — لسه محتاجه؟`, body: `${w.price} ${w.currency || 'جنيه'}. لو لغيته الفلوس دي تفضل معاك.` });
+  });
+
+  // مطابقة المحافظ مرة في الأسبوع على الأقل
+  (extra.wallets || []).filter(w => w.daysSinceCheck == null || w.daysSinceCheck >= 7).forEach(w => {
+    out.push({ id: `wcheck-${w.id}-${Math.floor(today.getTime() / (7 * 864e5))}`, fireOn: todayIso, kind: 'money', icon: 'scale', tone: 'info', href: '#/wallets', title: `طابق رصيد ${w.name}`, body: w.daysSinceCheck == null ? 'لسه ما طابقتش الرصيد ولا مرة. اكتب الرصيد الحقيقي وشوف فيه فلوس مش متسجلة ولا لأ.' : `آخر مطابقة من ${w.daysSinceCheck} يوم. اكتب الرصيد الحقيقي وشوف فيه فلوس مش متسجلة ولا لأ.` });
   });
 
   // آخر يوم في الشهر: تذكير بتقفيل الشهر

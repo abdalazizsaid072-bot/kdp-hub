@@ -1,9 +1,10 @@
 // KDP Hub Service Worker — تشغيل بدون نت + إشعارات في الخلفية
-const CACHE = 'kdphub-v5';
+const CACHE = 'kdphub-v6';
 const SHELL = ['./', 'index.html', 'styles.css', 'js/app.js', 'js/data.js', 'js/insights.js', 'js/templates.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/badge-96.png'];
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  // بنجيب الملفات من السيرفر مباشرة (مش من كاش المتصفح) عشان النسخة الجديدة توصل كاملة
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL.map(u => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', e => {
@@ -33,9 +34,10 @@ self.addEventListener('fetch', e => {
   // بيانات الشيت دايماً من النت (الأبلكيشن نفسه بيحتفظ بآخر نسخة)
   if (/script\.google(usercontent)?\.com$/.test(url.hostname)) return;
 
-  // ملفات الأبلكيشن: من النت الأول عشان التحديثات توصل، ولو مفيش نت من الكاش
+  // ملفات الأبلكيشن: من النت الأول عشان التحديثات توصل، ولو مفيش نت من الكاش.
+  // cache: 'no-cache' = نتأكد من السيرفر كل مرة (GitHub بيخلي الملفات قديمة 10 دقايق في كاش المتصفح)
   if (url.origin === self.location.origin) {
-    e.respondWith(fetch(e.request).then(res => {
+    e.respondWith(fetch(new Request(url.href, { cache: 'no-cache', credentials: 'same-origin' })).then(res => {
       if (res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); }
       return res;
     }).catch(() => caches.match(e.request, { ignoreSearch: true }).then(r => r || caches.match('index.html'))));

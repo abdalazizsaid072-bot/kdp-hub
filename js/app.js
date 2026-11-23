@@ -12,13 +12,14 @@ const sum = (a, f) => a.reduce((s, x) => s + (f(x) || 0), 0);
 const FONT = "'IBM Plex Sans Arabic', system-ui, sans-serif", FONT_HEAD = "'Cairo', system-ui, sans-serif";
 const LABELS = { clients: 'عميل / مشروع', tasks: 'مهمة', expenses: 'مصروف', ads: 'حملة إعلانية', notes: 'ملاحظة' };
 const SHEET_ICONS = { clients: 'user-plus', tasks: 'square-check', expenses: 'receipt', ads: 'target', notes: 'notebook-pen' };
-LABELS.payments = 'تحويل'; LABELS.campaigns = 'حملة إعلانية'; LABELS.campaignIncome = 'إيراد حملة'; LABELS.subscriptions = 'اشتراك'; LABELS.installments = 'قسط'; LABELS.otherIncome = 'دخل'; LABELS.goals = 'هدف'; LABELS.savings = 'حركة ادخار'; LABELS.wishlist = 'حاجة في قائمة الاستنى';
-Object.assign(SHEET_ICONS, { subscriptions: 'repeat', installments: 'calendar-range', otherIncome: 'hand-coins', goals: 'flag', savings: 'piggy-bank' });
+LABELS.payments = 'تحويل'; LABELS.campaigns = 'حملة إعلانية'; LABELS.campaignIncome = 'إيراد حملة'; LABELS.subscriptions = 'اشتراك أو التزام'; LABELS.installments = 'قسط'; LABELS.otherIncome = 'دخل'; LABELS.goals = 'هدف'; LABELS.savings = 'حركة ادخار'; LABELS.wishlist = 'حاجة في قائمة الاستنى'; LABELS.wallets = 'محفظة'; LABELS.walletTx = 'حركة محفظة';
+Object.assign(SHEET_ICONS, { subscriptions: 'repeat', installments: 'calendar-range', otherIncome: 'hand-coins', goals: 'flag', savings: 'piggy-bank', wallets: 'wallet', walletTx: 'arrow-left-right' });
+const APP_VERSION = '2026.11.23';
 
 const S = {
   settings: D.loadSettings(),
   raw: null, source: 'local', syncing: false, error: null, lastSync: D.LS.get('lastSync', null),
-  projects: [], tasks: [], expenses: [], ads: [], notes: [], payments: [], campaigns: [], incomes: [], subscriptions: [], installments: [], otherIncome: [], savings: [], goals: [], wishlist: [], plan: null, bp: null, em: null, unalloc: [], serverVersion: D.LS.get('serverVersion', null), k: null, reminders: [],
+  projects: [], tasks: [], expenses: [], ads: [], notes: [], payments: [], campaigns: [], incomes: [], subscriptions: [], installments: [], otherIncome: [], savings: [], goals: [], wishlist: [], wallets: [], walletTx: [], walletInfo: null, appSettings: [], app: {}, due: null, plan: null, bp: null, em: null, unalloc: [], serverVersion: D.LS.get('serverVersion', null), k: null, reminders: [],
   charts: [], route: { name: 'home', params: new URLSearchParams() },
   pf: { f: 'all', q: '', svc: '', sort: 'recent' }, aPeriod: '6', ideasTab: 'smart', toolTab: 'quote', quoteMkt: 'EG', qDaysTouched: false, moneyTab: 'plan', closeMonth: null, incomeMode: D.LS.get('incomeMode', 'auto'),
   queue: D.LS.get('queue', []), installPrompt: null,
@@ -78,6 +79,10 @@ function loadInitial() {
 
 function processData() {
   const st = S.settings, r = S.raw;
+  // إعدادات متزامنة في الشيت (رقم فودافون كاش، قالب رسالة العرض، الأسعار) — نفسها على الموبايل واللابتوب
+  S.appSettings = (r.appSettings || []).map(x => ({ ...x, sheet: 'appSettings', id: 'as' + x._row }));
+  S.app = Object.fromEntries(S.appSettings.map(x => [x.name, x.value]));
+  if (S.app.prices) { try { const p = JSON.parse(S.app.prices); st.prices = { EG: { ...D.DEFAULT_PRICES.EG, ...(p.EG || {}) }, SA: { ...D.DEFAULT_PRICES.SA, ...(p.SA || {}) } }; } catch { /* قيمة بايظة: نكمل بالأسعار المحلية */ } }
   S.projects = (r.clients || []).map(c => D.enrichClient(c, st));
   S.tasks = (r.tasks || []).map(I.enrichTask);
   S.expenses = (r.expenses || []).map(e => I.enrichExpense(e, st));
@@ -93,12 +98,19 @@ function processData() {
   S.goals = (r.goals || []).map(g => I.enrichGoal(g, S.savings, st));
   S.wishlist = (r.wishlist || []).map(w => I.enrichWish(w, st));
   D.SCHEMAS.savings.find(f => f.key === 'bucket').list = ['طوارئ', 'ادخار', ...S.goals.filter(g => !g.done).map(g => 'هدف: ' + g.name)];
+  S.walletTx = r.walletTx || [];
+  S.walletInfo = I.enrichWallets(r.wallets || [], S.walletTx);
+  S.wallets = S.walletInfo.wallets;
+  S.walletTx = S.walletInfo.txs;
+  const wNames = ['—', ...S.wallets.map(w => w.name)];
+  [D.SCHEMAS.expenses, D.SCHEMAS.otherIncome, D.SCHEMAS.walletTx].forEach(sc => sc.filter(f => f.key === 'wallet' || f.key === 'toWallet').forEach(f => { f.options = wNames; }));
+  S.due = I.dueThisMonth(S.subscriptions, S.installments, S.walletTx);
   S.plan = I.planOf(r.budget);
   S.bp = I.budgetPlan(D.monthKey(new Date()), moneyData(), S.plan, S.incomeMode);
   S.em = I.emergencyStatus(moneyData(), S.plan);
   S.unalloc = I.unallocatedIncome(moneyData());
   S.k = I.kpis(S.projects, S.expenses);
-  S.reminders = I.reminders(S.projects, S.tasks, st, { payments: S.payments, campaigns: S.campaigns, subs: S.subscriptions, installments: S.installments, budget: S.bp, unallocated: S.unalloc, wishlist: S.wishlist });
+  S.reminders = I.reminders(S.projects, S.tasks, st, { payments: S.payments, campaigns: S.campaigns, subs: S.subscriptions, installments: S.installments, budget: S.bp, unallocated: S.unalloc, wishlist: S.wishlist, wallets: S.wallets });
   updateBadges();
   idbSet('reminders', S.reminders);
 }
@@ -164,20 +176,38 @@ async function flushQueue() {
 
 function applyLocal(sheet, action, row, values) {
   const list = S.raw[sheet] = S.raw[sheet] || [];
-  if (action === 'add') list.push({ _row: Math.max(1, ...list.map(x => x._row)) + 1, ...values });
+  if (action === 'add') { const r = row || Math.max(1, ...list.map(x => x._row)) + 1; list.push({ _row: r, ...values }); return r; }
   if (action === 'update') Object.assign(list.find(x => x._row === row) || {}, values);
-  if (action === 'delete') S.raw[sheet] = list.filter(x => x._row !== row);
+  // الصفوف اللي تحت الصف الممسوح بتطلع صف لفوق في الشيت، فلازم أرقامها تتعدل هنا كمان
+  if (action === 'delete') S.raw[sheet] = list.filter(x => x._row !== row).map(x => x._row > row ? { ...x, _row: x._row - 1 } : x);
+  return row;
+}
+
+// كذا عملية حفظ ورا بعض (مثلاً مصروف + حركته في المحفظة): من غير رسايل كتير، وتحديث واحد في الآخر
+async function batch(fn, doneMsg = 'اتحفظ ✓') {
+  S.batching = true;
+  let ok = false;
+  try { ok = await fn(); }
+  finally {
+    S.batching = false;
+    processData(); renderView(true);
+    if (hasRemote()) sync(true);
+    if (ok !== false && doneMsg) toast(doneMsg, 'ok');
+  }
+  return ok;
 }
 
 // file (اختياري) = صورة تحويل مضغوطة { b64, mime, name, dataUrl }
+// بيرجع { ok, row } لو اتحفظ (row = رقم الصف الجديد في الشيت)، أو false لو حصل خطأ
 async function save(sheet, action, row, values, check, file = null, link = null) {
+  const quiet = S.batching;
   if (!hasRemote()) {
     if (file) { const key = 'rcpt-local-' + Date.now(); await idbSet(key, file.dataUrl); values = { ...values, receipt: 'local:' + key }; }
-    applyLocal(sheet, action, row, values);
+    const newRow = applyLocal(sheet, action, action === 'add' ? null : row, values);
     D.LS.set('local', S.raw);
-    processData(); renderView(true);
-    toast(action === 'delete' ? 'اتمسح' : 'اتحفظ (وضع تجريبي على الجهاز)', 'ok');
-    return true;
+    processData();
+    if (!quiet) { renderView(true); toast(action === 'delete' ? 'اتمسح' : 'اتحفظ (وضع تجريبي على الجهاز)', 'ok'); }
+    return { ok: true, row: newRow };
   }
   const payload = { sheet, action, row, values, check };
   if (sheet !== 'clients') payload.def = D.SHEET_DEFS[sheet];
@@ -187,18 +217,17 @@ async function save(sheet, action, row, values, check, file = null, link = null)
     if (file) { toast('رفع صورة التحويل محتاج إنترنت', 'err'); return false; }
     if (action !== 'add') { toast('التعديل محتاج إنترنت', 'err'); return false; }
     S.queue.push(payload); D.LS.set('queue', S.queue);
-    applyLocal(sheet, action, row, values); processData(); renderView(true);
-    toast('مفيش نت — هيتحفظ في الشيت أول ما النت يرجع', 'ok');
-    return true;
+    const newRow = applyLocal(sheet, action, row, values); processData();
+    if (!quiet) { renderView(true); toast('مفيش نت — هيتحفظ في الشيت أول ما النت يرجع', 'ok'); }
+    return { ok: true, row: newRow };
   }
   try {
     $('#syncBtn').classList.add('spin');
     const res = await D.postRemote(S.settings, payload);
     if (res.receipt) { values = { ...values, receipt: res.receipt }; const id = driveId(res.receipt); if (id && file) idbSet('rcpt:' + id, file.dataUrl); }
-    toast(action === 'delete' ? 'اتمسح من الشيت' : 'اتحفظ في الشيت ✓', 'ok');
-    applyLocal(sheet, action, row, values); processData(); renderView(true);
-    sync(true);
-    return true;
+    const newRow = applyLocal(sheet, action, action === 'add' ? res.row : row, values); processData();
+    if (!quiet) { toast(action === 'delete' ? 'اتمسح من الشيت' : 'اتحفظ في الشيت ✓', 'ok'); renderView(true); sync(true); }
+    return { ok: true, row: newRow };
   } catch (e) {
     if (/غير معروف|unknown|EXTRA_SHEETS|undefined/i.test(e.message) && sheet !== 'clients') { openCodeUpdateGuide(true); return false; }
     toast(e.message, 'err');
@@ -206,17 +235,61 @@ async function save(sheet, action, row, values, check, file = null, link = null)
   } finally { $('#syncBtn').classList.remove('spin'); }
 }
 
-const checkFor = (sheet, item) => ({ clients: { name: item.name }, ads: { book: item.book }, payments: { client: item.client }, campaigns: { name: item.name }, campaignIncome: { campaignId: item.campaignId }, subscriptions: { name: item.name }, installments: { name: item.name }, otherIncome: { source: item.source }, goals: { name: item.name }, savings: { bucket: item.bucket }, wishlist: { item: item.item }, budget: null })[sheet] || { title: item.title };
+const checkFor = (sheet, item) => ({ clients: { name: item.name }, ads: { book: item.book }, payments: { client: item.client }, campaigns: { name: item.name }, campaignIncome: { campaignId: item.campaignId }, subscriptions: { name: item.name }, installments: { name: item.name }, otherIncome: { source: item.source }, goals: { name: item.name }, savings: { bucket: item.bucket }, wishlist: { item: item.item }, budget: null, wallets: { name: item.name }, walletTx: null, appSettings: { name: item.name } })[sheet] || (sheet in D.SHEET_DEFS ? null : { title: item.title });
 const driveId = url => String(url || '').match(/[-\w]{25,}/)?.[0] || '';
+
+/* ═════════════ إعدادات متزامنة في الشيت ═════════════ */
+
+const getApp = (name, fallback = '') => S.app[name] ?? fallback;
+async function setApp(name, value) {
+  const row = S.appSettings.find(x => x.name === name);
+  const values = { name, value: String(value ?? ''), updated: D.sheetDay(new Date()) };
+  return row ? save('appSettings', 'update', row._row, values, null) : save('appSettings', 'add', null, values, null);
+}
+// بيحط رقم فودافون كاش وإنستاباي مكان {رقم_فودافون_كاش} و{إنستاباي} في أي رسالة
+function fillPayment(text) {
+  const vf = getApp('vfNumber').trim(), insta = getApp('instapay').trim();
+  return String(text || '')
+    .replace(/رقم(\s*(?:فودافون كاش)?\s*)\{رقم_فودافون_كاش\}/g, (m, mid) => vf ? `رقم${mid}${vf}` : 'رقم الواتساب ده')
+    .replace(/\{رقم_فودافون_كاش\}/g, vf || 'رقم الواتساب ده')
+    .replace(/\{إنستاباي\}/g, insta || '');
+}
+
+/* ═════════════ ربط كل حاجة بالمحافظ ═════════════ */
+
+const walletNames = () => S.wallets.map(w => w.name);
+const realWallet = name => (name && name !== '—' && walletNames().includes(name)) ? name : '';
+// المحفظة اللي بتستلم فيها فلوس العملاء وبتصرف منها (لو مش متحددة: أول محفظة صرف)
+const defaultWallet = () => realWallet(getApp('mainWallet')) || S.wallets.find(w => !w.isSaving)?.name || S.wallets[0]?.name || '';
+const walletForBucket = bucket => S.wallets.find(w => (/طوارئ/.test(bucket) ? /طوارئ/ : /ادخار/).test(w.purpose || ''))?.name || S.wallets.find(w => w.isSaving)?.name || '';
+
+// حركة المحفظة المربوطة بحاجة تانية (مصروف/تحويل عميل/قسط…): بتتعمل أو تتعدل أو تتمسح معاها
+async function syncTx(ref, values) {
+  const ex = S.walletTx.find(t => t.ref === ref);
+  if (!values || !realWallet(values.wallet)) return ex ? save('walletTx', 'delete', ex._row, {}, null) : { ok: true };
+  const v = { fee: '', balanceAfter: '', toWallet: '', category: '', desc: '', ...values, ref, amount: String(Math.round(Math.abs(Number(values.amount) || 0))) };
+  return ex ? save('walletTx', 'update', ex._row, v, null) : save('walletTx', 'add', null, { date: D.sheetDay(new Date()), ...v }, null);
+}
+
+// إيداع في الادخار/الطوارئ = تحويل من محفظة الصرف لمحفظة الادخار (لو عندك محفظة ادخار)
+async function linkSavingToWallet(savRow, v) {
+  if (String(v.ref || '').startsWith('wt:') || !S.wallets.length) return { ok: true };
+  const amount = Number(D.toLatin(v.amount).replace(/[^\d.]/g, '')) || 0;
+  const saveW = walletForBucket(v.bucket || ''), spendW = defaultWallet();
+  if (!amount || !saveW || !spendW || saveW === spendW) return { ok: true };
+  const withdraw = /سحب/.test(v.type || '');
+  if (!/إيداع|سحب/.test(v.type || '')) return { ok: true };
+  return syncTx(`sav:${savRow}`, { date: v.date || D.sheetDay(new Date()), type: 'تحويل', wallet: withdraw ? saveW : spendW, toWallet: withdraw ? spendW : saveW, amount, category: v.bucket, desc: withdraw ? `سحب من ${v.bucket}` : `تحويش: ${v.bucket}` });
+}
 
 /* ═════════════ التنقل ═════════════ */
 
 const NAV = [
-  { items: [['home', 'الرئيسية', 'layout-dashboard'], ['projects', 'المشاريع والعملاء', 'folder-kanban'], ['payments', 'التحويلات والمدفوعات', 'credit-card'], ['analytics', 'التحليلات', 'chart-column'], ['ideas', 'الأفكار والنمو', 'lightbulb']] },
+  { items: [['home', 'الرئيسية', 'layout-dashboard'], ['projects', 'المشاريع والعملاء', 'folder-kanban'], ['wallets', 'محافظي', 'wallet-cards'], ['payments', 'التحويلات والمدفوعات', 'credit-card'], ['analytics', 'التحليلات', 'chart-column'], ['ideas', 'الأفكار والنمو', 'lightbulb']] },
   { group: 'الشغل', items: [['campaigns', 'حملاتي الإعلانية', 'megaphone'], ['money', 'الفلوس والمصاريف', 'wallet'], ['tasks', 'المهام', 'list-checks'], ['ads', 'Amazon Ads (كتب العملاء)', 'target'], ['notes', 'ملاحظاتي', 'notebook-pen'], ['tools', 'الأدوات والرسائل', 'calculator']] },
   { group: 'النظام', items: [['settings', 'الإعدادات', 'settings'], ['setup', 'دليل الربط والتثبيت', 'book-open-check']] },
 ];
-const BOTTOM = [['home', 'الرئيسية', 'layout-dashboard'], ['projects', 'المشاريع', 'folder-kanban'], ['payments', 'التحويلات', 'credit-card'], ['campaigns', 'حملاتي', 'megaphone'], ['more', 'المزيد', 'layout-grid']];
+const BOTTOM = [['home', 'الرئيسية', 'layout-dashboard'], ['projects', 'المشاريع', 'folder-kanban'], ['wallets', 'محافظي', 'wallet-cards'], ['payments', 'التحويلات', 'credit-card'], ['more', 'المزيد', 'layout-grid']];
 const COUNTED = ['projects', 'tasks', 'payments', 'campaigns'];
 
 function buildNav() {
@@ -263,7 +336,7 @@ function renderView(keepScroll = false) {
   $('#topTitle').innerHTML = `<h1>${v.title()}</h1><p>${v.sub ? v.sub() : ''}</p>`;
   $('#banner').innerHTML = ['settings', 'setup'].includes(S.route.name) ? '' : bannerHTML();
   $('#view').innerHTML = v.render(S.route);
-  const active = ['tasks', 'ads', 'expenses', 'money', 'notes', 'tools', 'settings', 'setup', 'ideas', 'analytics'].includes(S.route.name) ? 'more' : S.route.name;
+  const active = ['tasks', 'ads', 'expenses', 'money', 'notes', 'tools', 'settings', 'setup', 'ideas', 'analytics', 'campaigns'].includes(S.route.name) ? 'more' : S.route.name;
   $$('[data-nav]').forEach(a => a.classList.toggle('active', a.dataset.nav === S.route.name || (a.closest('#bottomNav') && a.dataset.nav === active)));
   paint();
   v.after?.(S.route);
@@ -615,8 +688,39 @@ function paymentValues(p, amt) {
 }
 
 async function confirmDelete(sheet, item) {
-  if (!confirm(`متأكد إنك عايز تمسح "${item.name || item.title || item.book}" من ${hasRemote() ? 'الشيت' : 'الأبلكيشن'}؟ مينفعش ترجعه.`)) return;
-  if (await save(sheet, 'delete', item._row, {}, checkFor(sheet, item))) closeSheet();
+  if (!confirm(`متأكد إنك عايز تمسح "${item.name || item.title || item.book || item.desc || item.source || ''}" من ${hasRemote() ? 'الشيت' : 'الأبلكيشن'}؟ مينفعش ترجعه.`)) return;
+  const prefix = REF_PREFIX[sheet];
+  if (sheet === 'clients') {
+    // التحويلات بتشاور على رقم صف المشروع: نعدّله للمشاريع اللي تحت الصف الممسوح
+    const ok = await batch(async () => {
+      if (!(await save('clients', 'delete', item._row, {}, checkFor('clients', item)))) return false;
+      for (const p of S.payments.filter(p => p.projectRowN > item._row)) await save('payments', 'update', p._row, { projectRow: String(p.projectRowN - 1) }, null);
+      return true;
+    }, 'اتمسح');
+    if (ok) closeSheet();
+    return;
+  }
+  if (!prefix) { if (await save(sheet, 'delete', item._row, {}, checkFor(sheet, item))) closeSheet(); return; }
+  const ok = await batch(async () => {
+    if (!(await save(sheet, 'delete', item._row, {}, checkFor(sheet, item)))) return false;
+    const linked = S.walletTx.filter(t => new RegExp(`^${prefix}:${item._row}(:|$)`).test(t.ref || '')).sort((a, b) => b._row - a._row);
+    for (const t of linked) await save('walletTx', 'delete', t._row, {}, null);
+    await shiftRefs(prefix, item._row);
+    return true;
+  }, 'اتمسح');
+  if (ok) closeSheet();
+}
+
+const REF_PREFIX = { expenses: 'exp', otherIncome: 'inc', savings: 'sav', payments: 'pay', subscriptions: 'sub', installments: 'inst' };
+// لما صف يتمسح من الشيت، الصفوف اللي تحته بتطلع صف لفوق: بنعدّل الروابط اللي بتشاور عليها
+async function shiftRefs(prefix, deletedRow) {
+  const re = new RegExp(`^${prefix}:(\\d+)(.*)$`);
+  for (const [sheet, list] of [['walletTx', S.walletTx], ['savings', S.savings]]) {
+    for (const x of list) {
+      const m = String(x.ref || '').match(re);
+      if (m && Number(m[1]) > deletedRow) await save(sheet, 'update', x._row, { ref: `${prefix}:${Number(m[1]) - 1}${m[2]}` }, null);
+    }
+  }
 }
 
 /* ── التحليلات ── */
@@ -826,7 +930,7 @@ VIEWS.expenses = {
 
 /* ═════════════ الفلوس: تقفيل الشهر، اشتراكات، أقساط، مصروفات، دخل تاني ═════════════ */
 
-const MONEY_TABS = [['plan', 'خطة الفلوس', 'shield-check'], ['save', 'الادخار والأهداف', 'piggy-bank'], ['close', 'تقفيل الشهر', 'calculator'], ['subs', 'الاشتراكات', 'repeat'], ['inst', 'الأقساط', 'calendar-range'], ['expenses', 'المصروفات', 'receipt'], ['income', 'دخل تاني', 'hand-coins']];
+const MONEY_TABS = [['plan', 'خطة الفلوس', 'shield-check'], ['save', 'الادخار والأهداف', 'piggy-bank'], ['close', 'تقفيل الشهر', 'calculator'], ['subs', 'اشتراكات والتزامات', 'repeat'], ['inst', 'الأقساط', 'calendar-range'], ['expenses', 'المصروفات', 'receipt'], ['income', 'دخل تاني', 'hand-coins']];
 const TONE_VAR = { good: '--good', warning: '--warning', critical: '--critical', info: '--info' };
 
 // متوسط وأقل دخل في آخر 3 شهور كاملة (عشان "قيمة ساعة شغلك" و"مرتبك الآمن")
@@ -877,6 +981,10 @@ function planHTML() {
       <div><small>أقساط واشتراكات (الأول)</small><b>${I.fmt(bp.fixed)}</b></div><span>${ic('arrow-left')}</span>
       <div><small>بيتقسم على الخزنات</small><b>${I.fmt(bp.afterFixed)}</b></div>
     </div>
+    ${S.wallets.length ? (() => { // الفلوس اللي معاك فعلاً في المحافظ، بعد الالتزامات اللي لسه هتتدفع
+      const left = S.walletInfo.spendTotal - S.due.total, perDay = bp.daysLeft ? left / bp.daysLeft : left;
+      return `<p style="position:relative;margin-top:14px;background:rgba(0,0,0,.18);border-radius:12px;padding:10px 14px">${ic('wallet-cards')} معاك فعلاً في محافظ الصرف <b>${I.money(S.walletInfo.spendTotal)}</b>${S.due.total ? `، وبعد الالتزامات اللي لسه هتتدفع الشهر ده (${I.money(S.due.total)}) يفضل <b>${I.money(left)}</b>` : ''} ← يعني <b>${I.money(Math.max(perDay, 0))} في اليوم</b> بالفلوس اللي في إيدك.</p>`;
+    })() : ''}
   </div>
   ${warn.map(w => `<div class="banner" style="margin-top:14px;border-color:var(--warning)">${ic('triangle-alert')}<p>${w}</p></div>`).join('')}
   ${S.k.receivables ? `<p class="muted small" style="margin:12px 0 0">${ic('clock')} عندك ${I.money(S.k.receivables)} مستحقات عند العملاء. متصرفش على أساسها لحد ما توصل وتأكدها في التحويلات، ووقتها هتتقسم لوحدها.</p>` : ''}
@@ -974,10 +1082,17 @@ function planAfter() {
     b.disabled = true;
     const s = splitOf(u.amount), day = D.sheetDay(new Date());
     const parts = s.parts.filter(p => (p.key === 'emergency' || p.key === 'savings') && p.amount >= 1);
-    let ok = true;
-    for (const p of parts) ok = ok && await save('savings', 'add', null, { date: day, bucket: p.key === 'emergency' ? 'طوارئ' : 'ادخار', type: 'إيداع', amount: String(Math.round(p.amount)), currency: 'جنيه', ref: u.ref, notes: `من ${u.label}` });
-    if (ok && !parts.length) ok = await save('savings', 'add', null, { date: day, bucket: 'ادخار', type: 'تقسيم', amount: '0', currency: 'جنيه', ref: u.ref, notes: `اتقسم: ${u.label}` });
-    if (ok) { toast('برافو — دفعت لنفسك الأول', 'ok'); confetti(); } else b.disabled = false;
+    const ok = await batch(async () => {
+      for (const p of parts) {
+        const v = { date: day, bucket: p.key === 'emergency' ? 'طوارئ' : 'ادخار', type: 'إيداع', amount: String(Math.round(p.amount)), currency: 'جنيه', ref: u.ref, notes: `من ${u.label}` };
+        const r = await save('savings', 'add', null, v);
+        if (!r) return false;
+        await linkSavingToWallet(r.row, v); // لو عندك محفظة ادخار: الفلوس تتنقل لها
+      }
+      if (!parts.length) return save('savings', 'add', null, { date: day, bucket: 'ادخار', type: 'تقسيم', amount: '0', currency: 'جنيه', ref: u.ref, notes: `اتقسم: ${u.label}` });
+      return true;
+    }, 'برافو — دفعت لنفسك الأول');
+    if (ok) confetti(); else b.disabled = false;
   });
   $$('[data-askip]').forEach(b => b.onclick = async () => {
     const u = S.unalloc.find(x => x.ref === b.dataset.askip); if (!u) return;
@@ -1129,7 +1244,7 @@ function subsHTML() {
   const have = new Set(S.subscriptions.map(s => s.name.toLowerCase()));
   const presets = D.SUB_PRESETS.filter(([n]) => !have.has(n.toLowerCase()));
   const chips = `<div class="card" style="margin-bottom:16px"><div class="card-head" style="margin-bottom:10px"><h3>${ic('zap')} ضيف بسرعة</h3><span class="sub">دوس على البرنامج واكتب سعره وتاريخ الدفع</span></div>
-    <div class="chips" style="flex-wrap:wrap">${presets.map(([n, c]) => `<button class="chip" data-add="subscriptions" data-pre='${esc(JSON.stringify({ name: n, category: c }))}'>${ic('plus')}${n}</button>`).join('')}<button class="chip" data-add="subscriptions">${ic('plus')}برنامج تاني</button></div></div>`;
+    <div class="chips" style="flex-wrap:wrap">${presets.map(([n, c, cur]) => `<button class="chip" data-add="subscriptions" data-pre='${esc(JSON.stringify({ name: n, category: c, ...(cur ? { currency: cur } : {}) }))}'>${ic('plus')}${n}</button>`).join('')}<button class="chip" data-add="subscriptions">${ic('plus')}اشتراك أو التزام تاني</button></div></div>`;
   if (!subs.length) return chips + emptyState('repeat', 'مفيش اشتراكات متسجلة', 'سجّل اشتراكات البرامج اللي بتشتغل عليها، وهيجيلك تذكير قبل كل تجديد، وهتدخل لوحدها في تقفيل الشهر.');
   return `<div class="grid g-4">
       ${kpi({ icon: 'repeat', cls: 'i1', label: 'اشتراكات شغالة', value: active.length, foot: subs.length > active.length ? `${subs.length - active.length} ملغي` : '' })}
@@ -1144,6 +1259,12 @@ function subsHTML() {
       <div class="money-row"><span>${s.yearly ? 'سنوي' : 'شهري'}</span><b>${esc(s.price)} ${esc(s.currency || '')}</b></div>
       <div class="money-row"><span>${s.cancelled ? 'اتلغى' : 'التجديد الجاي'}</span><span>${s.cancelled ? fmtDate(s.cancelDate ? D.parseDate(s.cancelDate) : null) || '—' : s.next ? fmtDate(s.next) : 'اكتب تاريخ الدفع'}</span></div>
       ${!s.cancelled ? `<div class="money-row"><span>≈ في الشهر</span><b>${I.money(s.monthlyEGP)}</b></div>` : ''}
+      ${(() => { // زرار "دفعت" لو ميعاده الشهر ده قرّب أو عدّى ولسه متسجلش
+        const key = D.monthKey(new Date()), cd = s.chargeDate(key);
+        if (s.cancelled || !cd || !S.wallets.length) return '';
+        if (S.walletTx.some(t => t.ref === `sub:${s._row}:${key}`)) return `<span class="muted small">${ic('check')} اتدفع الشهر ده من المحفظة</span>`;
+        return D.daysBetween(D.startOfDay(), cd) <= 3 ? `<button class="btn primary sm" data-spay="${s.id}">${ic('check')} دفعت ${I.money(s.priceEGP)} من ${esc(defaultWallet())}</button>` : '';
+      })()}
     </div>`).join('')}</div>`;
 }
 
@@ -1198,7 +1319,12 @@ VIEWS.money = {
     $$('[data-ipay]').forEach(b => b.onclick = async e => {
       e.stopPropagation();
       const i = S.installments.find(x => x.id === b.dataset.ipay);
-      if (await save('installments', 'update', i._row, { paidCount: String(i.paidCount + 1), lastPaid: D.monthKey(new Date()) }, checkFor('installments', i))) confetti();
+      if (await payInstallment(i)) confetti();
+    });
+    $$('[data-spay]').forEach(b => b.onclick = async e => {
+      e.stopPropagation();
+      const s = S.subscriptions.find(x => x.id === b.dataset.spay);
+      if (await payObligation(s)) confetti();
     });
     if (S.moneyTab === 'expenses') VIEWS.expenses.after();
     if (S.moneyTab === 'plan') planAfter();
@@ -1249,7 +1375,7 @@ VIEWS.notes = {
 VIEWS.more = {
   title: () => 'المزيد',
   render() {
-    const tiles = [['analytics', 'التحليلات', 'chart-column', 'البيزنس بيكبر ولا لأ'], ['ideas', 'الأفكار والنمو', 'lightbulb', 'أفكار من أرقامك'], ['tasks', 'المهام', 'list-checks', `${S.tasks.filter(t => !t.done).length} مفتوحة`], ['ads', 'Amazon Ads', 'target', `كتب العملاء · ${S.ads.length} سجل`], ['money', 'الفلوس والمصاريف', 'wallet', 'تقفيل الشهر، اشتراكات، أقساط'], ['notes', 'ملاحظاتي', 'notebook-pen', `${S.notes.length} ملاحظة`], ['tools', 'الأدوات والرسائل', 'calculator', 'عروض أسعار ورسائل جاهزة'], ['settings', 'الإعدادات', 'settings', 'الربط والإشعارات'], ['setup', 'دليل الربط والتثبيت', 'book-open-check', 'خطوة بخطوة']];
+    const tiles = [['money', 'الفلوس والمصاريف', 'piggy-bank', 'خطة الفلوس وتقفيل الشهر'], ['campaigns', 'حملاتي الإعلانية', 'megaphone', `${S.campaigns.filter(c => c.state === 'active').length} شغالة`], ['analytics', 'التحليلات', 'chart-column', 'البيزنس بيكبر ولا لأ'], ['ideas', 'الأفكار والنمو', 'lightbulb', 'أفكار من أرقامك'], ['tasks', 'المهام', 'list-checks', `${S.tasks.filter(t => !t.done).length} مفتوحة`], ['ads', 'Amazon Ads', 'target', `كتب العملاء · ${S.ads.length} سجل`], ['notes', 'ملاحظاتي', 'notebook-pen', `${S.notes.length} ملاحظة`], ['tools', 'الأدوات والرسائل', 'calculator', 'عروض أسعار ورسائل جاهزة'], ['settings', 'الإعدادات', 'settings', 'الربط والإشعارات'], ['setup', 'دليل الربط والتثبيت', 'book-open-check', 'خطوة بخطوة']];
     return `<div class="more-grid">${tiles.map(([k, l, i, s]) => `<a class="card more-tile" href="#/${k}"><div class="kpi-icon">${ic(i)}</div><b>${l}</b><small>${s}</small></a>`).join('')}</div>`;
   },
 };
@@ -1258,7 +1384,7 @@ VIEWS.more = {
 function homeLiveCards() {
   const pend = S.payments.filter(p => p.statusKey === 'pending');
   const live = S.campaigns.filter(c => c.state === 'active');
-  const hasMoney = S.subscriptions.length || S.installments.length || S.otherIncome.length || S.expenses.length;
+  const hasMoney = S.subscriptions.length || S.installments.length || S.otherIncome.length || S.expenses.length || S.wallets.length;
   if (!pend.length && !live.length && !hasMoney) return '';
   const cards = [];
   if (hasMoney || S.bp.income) {
@@ -1269,6 +1395,7 @@ function homeLiveCards() {
     cards.push(`<div class="card insight t-${tone}"><div class="ins-icon tone-${tone}">${ic('wallet')}</div><div>
       <div class="muted small">${I.monthName(new Date())} لحد النهارده · دخلك ${I.money(mc.income)} · صرفت ${I.money(mc.spend)}</div>
       <h4>${bp.income ? `تقدر تصرف ${I.money(bp.daily || 0)} في اليوم لحد آخر الشهر` : 'لسه مفيش دخل متسجل الشهر ده'}</h4>
+      ${S.wallets.length ? `<p class="small" style="margin:2px 0 6px">${ic('wallet-cards')} معاك فعلاً ${I.money(S.walletInfo.spendTotal)} للصرف${S.walletInfo.saveTotal ? ` + ${I.money(S.walletInfo.saveTotal)} مدخرات` : ''}${S.due.total ? ` · لسه هيتدفع ${I.money(S.due.total)} التزامات` : ''}</p>` : ''}
       <p>${over.length ? `عديت ميزانية: ${over.map(e => e.label).join('، ')}. ` : ''}${S.unalloc.length ? `فيه ${S.unalloc.length} دخل متقسمش على الخزنات. ` : ''}${soon.length ? `جاي قريب: ${esc(soon.slice(0, 3).join('، '))}` : ''}</p>
       <a class="btn sm" href="#/money?t=plan">خطة الفلوس ${ic('chevron-left')}</a></div></div>`);
   }
@@ -1278,6 +1405,276 @@ function homeLiveCards() {
     <p>صرفت ${I.money(c.spentEGP)}${c.spentEstimated ? ' (الميزانية)' : ''} · جابت ${I.money(c.revenueEGP)}${c.roas != null && c.revenueEGP ? ` · كل 1 جنيه رجّع ${c.roas.toFixed(1)}` : ''}</p>
     <div class="row" style="margin-top:10px"><button class="btn sm primary" data-cinc="${c.rowId}">${ic('plus')} ضيف إيراد</button><a class="btn sm" href="#/campaign/${c.rowId}">التفاصيل</a></div></div></div>`));
   return `<div class="grid g-2" style="margin-top:16px">${cards.join('')}</div>`;
+}
+
+/* ═════════════ محافظي ═════════════ */
+
+const WALLET_ICON = k => /فودافون|اتصالات|أورنج|اورنج|وي/.test(k || '') ? 'smartphone' : /إنستا|انستا/.test(k || '') ? 'zap' : /بنك/.test(k || '') ? 'landmark' : /كاش في البيت/.test(k || '') ? 'banknote' : 'wallet';
+const TX_LOOK = { in: ['arrow-down-left', '#10b981,#0fb5d4', '+'], out: ['arrow-up-right', '#f43f5e,#f59e0b', '−'], transfer: ['arrow-left-right', '#7b5cff,#4f7cff', ''], adjust: ['scale', '#64748b,#94a3b8', ''], check: ['badge-check', '#0ea5e9,#22d3ee', ''], other: ['circle', '#64748b,#94a3b8', ''] };
+const walletOptions = (sel, exclude = '') => S.wallets.filter(w => w.name !== exclude).map(w => `<option ${w.name === sel ? 'selected' : ''}>${esc(w.name)}</option>`).join('');
+
+function txRow(t) {
+  const [icon, grad, sign] = TX_LOOK[t.typeKey] || TX_LOOK.other;
+  const title = t.typeKey === 'transfer' ? `${esc(t.wallet)} ← ${esc(t.toWallet)}` : t.typeKey === 'check' ? `مطابقة ${esc(t.wallet)}: الرصيد ${I.fmt(t.balanceAfterN ?? 0)}` : esc(t.desc || t.category || t.type);
+  const sub = [fmtDate(t.dateObj), t.typeKey !== 'transfer' && t.typeKey !== 'check' ? esc(t.wallet) : '', t.category && t.typeKey !== 'check' ? esc(t.category) : '', t.feeN ? `رسوم ${I.fmt(t.feeN)}` : ''].filter(Boolean).join(' · ');
+  const amt = t.typeKey === 'check' ? '' : t.typeKey === 'adjust' ? `${t.signedN >= 0 ? '+' : '−'}${I.fmt(Math.abs(t.signedN))}` : `${sign}${I.fmt(t.amountN)}`;
+  return `<div class="list-item" data-edit="walletTx:${t.id}"><div class="avatar" style="background:linear-gradient(135deg,${grad})">${ic(icon)}</div>
+    <div class="li-body"><div class="li-title">${title}</div><div class="li-sub">${sub}</div></div>
+    <div class="li-end"><b class="num" style="color:${t.typeKey === 'in' || (t.typeKey === 'adjust' && t.signedN > 0) ? 'var(--good-text)' : t.typeKey === 'out' || (t.typeKey === 'adjust' && t.signedN < 0) ? 'var(--critical)' : 'inherit'}">${amt}</b></div></div>`;
+}
+
+function walletCard(w) {
+  const chk = w.lastCheck ? (w.daysSinceCheck === 0 ? 'طابقت النهارده' : `آخر مطابقة من ${w.daysSinceCheck} يوم`) : 'لسه ما طابقتش الرصيد';
+  return `<div class="card pcard wcard" data-edit="wallets:${w.id}">
+    <div class="top"><div class="avatar" style="background:linear-gradient(135deg,${w.isSaving ? '#10b981,#0fb5d4' : '#e60000,#f43f5e'})">${ic(WALLET_ICON(w.kind))}</div>
+      <div class="li-body"><div class="li-title">${esc(w.name)}</div><div class="li-sub">${esc(w.kind || '')}${w.number ? ' · ' + esc(w.number) : ''}</div></div>
+      <span class="badge tone-${w.isSaving ? 'good' : 'info'}">${esc(w.purpose || 'صرف')}</span></div>
+    <div class="env-num"><b class="num" style="color:${w.balance < 0 ? 'var(--critical)' : 'inherit'}">${I.fmt(w.balance)}</b> <small>ج.م معاك</small></div>
+    <div class="money-row"><span style="color:var(--good-text)">+${I.fmt(w.monthIn)} دخل الشهر ده</span><span style="color:var(--critical)">−${I.fmt(w.monthOut)} خرج</span></div>
+    <div class="row between"><span class="muted small">${ic(w.daysSinceCheck != null && w.daysSinceCheck < 7 ? 'badge-check' : 'scale')} ${chk}</span><button class="btn sm" data-wcheck="${esc(w.name)}">${ic('scale')} طابق</button></div>
+  </div>`;
+}
+
+VIEWS.wallets = {
+  title: () => 'محافظي',
+  sub: () => 'معاك كام فعلاً، وكل جنيه دخل أو خرج',
+  render() {
+    if (!S.wallets.length) return `
+      <div class="card insight t-info" style="margin-bottom:16px"><div class="ins-icon tone-info">${ic('wallet-cards')}</div><div><h4>سجّل محافظك وكل جنيه هيبقى متابَع</h4>
+        <p>ضيف فودافون كاش اللي بتصرف وتستلم عليه، ومحفظة الادخار لو بتحوّش في محفظة تانية. بعدها كل رسالة من المحفظة تلصقها هنا، والأبلكيشن يعرف معاك كام وراحوا فين. تحويلات العملاء اللي بتأكدها والمصروفات والأقساط بتتسجل في المحفظة لوحدها.</p></div></div>
+      <div class="more-grid">
+        <button class="card more-tile" data-add="wallets" data-pre='${esc(JSON.stringify({ name: 'فودافون كاش', kind: 'فودافون كاش', purpose: 'صرف' }))}' style="text-align:right;cursor:pointer"><div class="kpi-icon">${ic('smartphone')}</div><b>فودافون كاش (للصرف والشغل)</b><small>اللي بتستلم عليه من العملاء</small></button>
+        <button class="card more-tile" data-add="wallets" data-pre='${esc(JSON.stringify({ name: 'محفظة الادخار', kind: 'فودافون كاش', purpose: 'ادخار' }))}' style="text-align:right;cursor:pointer"><div class="kpi-icon">${ic('piggy-bank')}</div><b>محفظة الادخار</b><small>الفلوس اللي بتركنها على جنب</small></button>
+        <button class="card more-tile" data-add="wallets" style="text-align:right;cursor:pointer"><div class="kpi-icon">${ic('plus')}</div><b>محفظة تانية</b><small>بنك، إنستاباي، كاش في البيت…</small></button>
+      </div>`;
+    const W = S.walletInfo, due = S.due;
+    const recent = [...W.txs].reverse().slice(0, 40);
+    return `
+    <div class="hero">
+      <p style="margin:0;opacity:.85;position:relative">معاك في كل محافظك</p>
+      <h2 style="font-size:30px;margin-top:4px">${I.money(W.total)}</h2>
+      <div class="plan-flow">
+        <div><small>محافظ الصرف</small><b>${I.fmt(W.spendTotal)}</b></div>
+        <div><small>المدخرات</small><b>${I.fmt(W.saveTotal)}</b></div>
+        ${due.total ? `<div><small>التزامات لسه هتتدفع الشهر ده</small><b>${I.fmt(due.total)}</b></div><div><small>يفضل للصرف</small><b>${I.fmt(W.spendTotal - due.total)}</b></div>` : ''}
+      </div>
+    </div>
+    <div class="row" style="margin:16px 0">
+      <button class="btn primary" data-act="sms">${ic('message-square-text')} الصق رسالة المحفظة</button>
+      <button class="btn" data-add="expenses">${ic('arrow-up-right')} مصروف</button>
+      <button class="btn" data-add="otherIncome">${ic('arrow-down-left')} دخل</button>
+      <button class="btn" data-act="wtransfer">${ic('arrow-left-right')} تحويل بين محافظي</button>
+      <button class="btn ghost" data-add="wallets">${ic('plus')} محفظة</button>
+    </div>
+    ${W.spendTotal - due.total < 0 ? `<div class="banner" style="border-color:var(--critical)">${ic('siren')}<p>الفلوس اللي في محافظ الصرف (${I.money(W.spendTotal)}) أقل من الالتزامات اللي لسه هتتدفع الشهر ده (${I.money(due.total)}: ${esc(due.items.map(x => x.label).join('، '))}). حصّل فلوس العملاء المتأخرة قبل ميعادها.</p></div>` : ''}
+    <div class="project-grid">${W.wallets.map(walletCard).join('')}</div>
+    <div class="grid g-main" style="margin-top:16px">
+      <div class="card"><div class="card-head"><h3>${ic('chart-spline')} رصيد محافظ الصرف آخر 30 يوم</h3></div><div class="chart-box"><canvas id="wChart" aria-label="رصيد محافظ الصرف آخر 30 يوم"></canvas></div></div>
+      <div class="card"><div class="card-head"><h3>${ic('calendar-clock')} لسه هيتدفع الشهر ده</h3><span class="sub">${I.money(due.total)}</span></div>
+        ${due.items.length ? `<div class="list">${due.items.map(x => `<div class="list-item" style="cursor:default"><div class="li-body"><div class="li-title">${esc(x.label)}</div><div class="li-sub">${fmtDate(x.date)} · ${dueText(D.daysBetween(D.startOfDay(), x.date))}</div></div><div class="li-end"><b class="num">${I.fmt(x.amount)}</b></div></div>`).join('')}</div>`
+          : `<p class="muted small" style="margin:0">مفيش التزامات متسجلة لسه هتتدفع الشهر ده. سجّل الإيجار ومرتب الموظفة والاشتراكات من <a href="#/money?t=subs" style="color:var(--accent)">اشتراكات والتزامات</a>.</p>`}
+      </div>
+    </div>
+    <h2 class="section-title">${ic('list')} حركة المحافظ</h2>
+    ${recent.length ? `<div class="card"><div class="list">${recent.map(txRow).join('')}</div></div>` : '<p class="muted">لسه مفيش حركات. الصق أول رسالة من المحفظة.</p>'}`;
+  },
+  after() {
+    if (!S.wallets.length || !$('#wChart')) return;
+    const c = colors(), s = S.walletInfo.series;
+    mkChart('wChart', { type: 'line', data: { labels: s.map(p => fmtDate(p.date)), datasets: [{ label: 'الرصيد', data: s.map(p => Math.round(p.value)), borderColor: c.s1, backgroundColor: c.s1 + '1f', fill: true, tension: .3, borderWidth: 2, pointRadius: 0, pointHoverRadius: 5 }] }, options: baseOpts() });
+  },
+};
+
+/* ── لصق رسالة المحفظة ── */
+function openSmsSheet() {
+  if (!S.wallets.length) { toast('ضيف محفظتك الأول', 'err'); location.hash = '#/wallets'; return; }
+  openSheet({
+    title: `${ic('message-square-text')} رسالة من المحفظة`,
+    body: `<div class="field"><label>${ic('clipboard-paste')} الصق نص الرسالة هنا (فودافون كاش أو أي محفظة)</label>
+        <textarea id="smsText" style="min-height:90px" placeholder="مثال: تم استلام مبلغ 2500 جنيه من رقم … رصيد حسابك الحالي 5500 جنيه"></textarea></div>
+      <div class="row" style="margin-top:8px"><button class="btn sm" id="smsClip">${ic('clipboard')} الصق من الحافظة</button><span class="muted small">أو اكتب العملية بإيدك تحت لو مفيش رسالة</span></div>
+      <div id="smsForm" style="margin-top:14px"></div>`,
+    foot: `<button class="btn primary" id="smsSave">${ic('check')} سجّل</button><button class="btn ghost" id="smsCancel">إلغاء</button>`,
+  });
+  const st = { type: 'out', amount: '', fee: 0, balance: null, phoneTail: '' };
+  const draw = () => {
+    const isIn = st.type === 'in';
+    const pend = S.payments.filter(p => p.statusKey === 'pending');
+    const owing = S.projects.filter(p => p.remainingEGP > 0 && !p.isLead);
+    const near = x => Math.abs(x - (Number(st.amount) || 0)) < 1;
+    const kinds = isIn
+      ? [['client', 'تحويل من عميل'], ['income', 'دخل تاني (مرتب، أرباح…)'], ['fromWallet', 'تحويل من محفظة تانية بتاعتي'], ['plain', 'دخل من غير تصنيف']]
+      : [['personal', 'مصروف شخصي'], ['work', 'مصروف شغل'], ['toWallet', 'تحويل لمحفظة تانية بتاعتي (ادخار/طوارئ)'], ['obligation', 'دفع التزام (إيجار، مرتب، اشتراك، قسط)']];
+    const cur = $('#smsKind')?.value;
+    const kind = kinds.some(k => k[0] === cur) ? cur : kinds[0][0];
+    $('#smsForm').innerHTML = `
+      ${st.parsed ? `<div class="row" style="margin-bottom:10px"><span class="badge tone-${isIn ? 'good' : 'critical'}">${ic(isIn ? 'arrow-down-left' : 'arrow-up-right')}${isIn ? 'فلوس دخلت' : 'فلوس خرجت'}</span>${st.balance != null ? `<span class="tag">${ic('wallet')}الرصيد بعدها ${I.fmt(st.balance)}</span>` : ''}${st.phoneTail ? `<span class="tag">${ic('phone')}رقم آخره ${st.phoneTail}</span>` : ''}</div>` : ''}
+      <div class="form">
+        <div class="field"><label>${ic('arrow-left-right')} العملية</label><select id="smsType"><option value="in" ${isIn ? 'selected' : ''}>فلوس دخلت</option><option value="out" ${!isIn ? 'selected' : ''}>فلوس خرجت</option></select></div>
+        <div class="field"><label>${ic('wallet')} المحفظة</label><select id="smsWallet">${walletOptions(st.wallet || defaultWallet())}</select></div>
+        <div class="field"><label>${ic('coins')} المبلغ</label><input id="smsAmt" inputmode="decimal" value="${st.amount}"></div>
+        <div class="field"><label>${ic('percent')} رسوم (لو فيه)</label><input id="smsFee" inputmode="decimal" value="${st.fee || ''}"></div>
+        <div class="field full"><label>${ic('tag')} العملية دي إيه؟</label><select id="smsKind">${kinds.map(([v, l]) => `<option value="${v}" ${v === kind ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+        ${kind === 'client' ? `<div class="field full"><label>${ic('user')} من أنهي عميل</label><select id="smsClient">
+          ${pend.length ? `<optgroup label="تحويلات مستنية تأكيد">${pend.sort((a, b) => near(b.amountEGP) - near(a.amountEGP)).map(p => `<option value="p:${p.id}" ${near(p.amountEGP) ? 'selected' : ''}>${esc(p.client)} — ${esc(p.amount)} ${esc(p.currency || '')}</option>`).join('')}</optgroup>` : ''}
+          <optgroup label="مشاريع عليها باقي">${owing.sort((a, b) => near(b.remainingEGP) - near(a.remainingEGP)).map(p => `<option value="r:${p._row}">${esc(p.displayName)} — باقي ${I.fmt(p.remainingEGP / p.rate)} ${unitOf(p)}</option>`).join('')}</optgroup>
+          <option value="none">عميل مش في القايمة</option></select></div>` : ''}
+        ${kind === 'income' ? `<div class="field full"><label>${ic('hand-coins')} المصدر</label><input id="smsSource" list="dl-inc" value="مرتب شغل KDP"><datalist id="dl-inc">${D.INCOME_SOURCES.map(x => `<option value="${esc(x)}">`).join('')}</datalist></div>` : ''}
+        ${kind === 'fromWallet' || kind === 'toWallet' ? `<div class="field full"><label>${ic('wallet')} ${kind === 'toWallet' ? 'اتحولت لـ' : 'جت من'}</label><select id="smsOther">${walletOptions(kind === 'toWallet' ? S.wallets.find(w => w.isSaving)?.name : '', $('#smsWallet')?.value || defaultWallet())}</select></div>` : ''}
+        ${kind === 'personal' || kind === 'work' ? `<div class="field"><label>${ic('tag')} الفئة</label><select id="smsCat">${(kind === 'work' ? D.WORK_CATS : D.PERSONAL_CATS).map(x => `<option>${x}</option>`).join('')}</select></div><div class="field"><label>${ic('receipt')} اتصرفت على إيه</label><input id="smsTitle" placeholder="مثلاً: بنزين، أكل، فريلانسر…"></div>` : ''}
+        ${kind === 'obligation' ? `<div class="field full"><label>${ic('repeat')} أنهي التزام</label><select id="smsObl">
+          ${S.subscriptions.filter(s => !s.cancelled).map(s => `<option value="s:${s.id}" ${near(s.priceEGP) ? 'selected' : ''}>${esc(s.name)} — ${I.fmt(s.priceEGP)}</option>`).join('')}
+          ${S.installments.filter(i => !i.done).map(i => `<option value="i:${i.id}" ${near(i.monthlyEGP) ? 'selected' : ''}>قسط ${esc(i.name)} — ${I.fmt(i.monthlyEGP)}</option>`).join('')}
+        </select>${!S.subscriptions.length && !S.installments.length ? `<div class="hint">سجّل الإيجار والمرتب والاشتراكات الأول في <a href="#/money?t=subs">اشتراكات والتزامات</a>.</div>` : ''}</div>` : ''}
+        <div class="field full"><label>${ic('sticky-note')} ملاحظة</label><input id="smsNote"></div>
+      </div>`;
+    paint();
+    $('#smsType').onchange = e => { st.type = e.target.value; keep(); draw(); };
+    $('#smsKind').onchange = () => { keep(); draw(); };
+    $('#smsWallet').onchange = () => { keep(); draw(); };
+  };
+  const keep = () => { st.amount = $('#smsAmt')?.value ?? st.amount; st.fee = $('#smsFee')?.value ?? st.fee; st.wallet = $('#smsWallet')?.value || st.wallet; };
+  const parse = () => {
+    const p = D.parseWalletSms($('#smsText').value);
+    if (!$('#smsText').value.trim()) return;
+    Object.assign(st, { parsed: true, type: p.type || st.type, amount: p.amount ?? st.amount, fee: p.fee || 0, balance: p.balance, phoneTail: p.phoneTail });
+    draw();
+  };
+  $('#smsText').oninput = parse;
+  $('#smsClip').onclick = async () => { try { $('#smsText').value = await navigator.clipboard.readText(); parse(); } catch { toast('الصق بإيدك (Ctrl+V)', 'err'); } };
+  $('#smsCancel').onclick = () => closeSheet();
+  draw();
+  $('#smsSave').onclick = async () => {
+    keep();
+    const amount = Number(D.toLatin($('#smsAmt').value).replace(/[^\d.]/g, '')) || 0, fee = Number(D.toLatin($('#smsFee').value).replace(/[^\d.]/g, '')) || 0;
+    if (!amount) return toast('اكتب المبلغ', 'err');
+    const wallet = $('#smsWallet').value, kind = $('#smsKind').value, note = $('#smsNote').value.trim(), day = D.sheetDay(new Date());
+    const other = $('#smsOther')?.value;
+    $('#smsSave').disabled = true;
+    const ok = await batch(async () => {
+      if (kind === 'client') {
+        const v = $('#smsClient').value;
+        if (v.startsWith('p:')) { const p = S.payments.find(x => x.id === v.slice(2)); return confirmPayment(p, true, wallet); }
+        const proj = v.startsWith('r:') ? S.projects.find(x => x._row === Number(v.slice(2))) : null;
+        if (proj && !(await save('clients', 'update', proj._row, paymentValues(proj, amountInProject(proj, amount, 'جنيه')), checkFor('clients', proj)))) return false;
+        const r = await save('payments', 'add', null, { date: day, client: proj?.displayName || note || 'عميل', project: proj ? I.short(proj.project, 80) : '', projectRow: proj ? String(proj._row) : '', amount: String(amount), currency: 'جنيه', method: /إنستا|انستا/.test(wallet) ? 'إنستاباي' : 'فودافون كاش', receipt: '', status: D.PAY_STATUS.confirmed, applied: proj ? 'نعم' : '', notes: note || 'من رسالة المحفظة' });
+        return r && paymentToWallet(r.row, { amount, currency: 'جنيه', client: proj?.displayName || 'عميل', date: day }, wallet);
+      }
+      if (kind === 'income') {
+        const r = await save('otherIncome', 'add', null, { date: day, source: $('#smsSource').value.trim() || 'دخل', amount: String(amount), currency: 'جنيه', notes: note, wallet });
+        return r && syncTx(`inc:${r.row}`, { date: day, type: 'دخل', wallet, amount, fee, category: 'دخل تاني', desc: $('#smsSource').value.trim() });
+      }
+      if (kind === 'fromWallet' || kind === 'toWallet') {
+        const from = kind === 'toWallet' ? wallet : other, to = kind === 'toWallet' ? other : wallet;
+        if (!from || !to || from === to) { toast('اختار المحفظة التانية', 'err'); return false; }
+        // لو التحويل ده متسجل خلاص من رسالة المحفظة التانية، منسجلوش مرتين
+        const dup = S.walletTx.find(t => t.typeKey === 'transfer' && t.wallet === from && t.toWallet === to && Math.abs(t.amountN - amount) < 1 && Math.abs(D.daysBetween(t.dateObj, new Date())) <= 3);
+        if (dup) { toast('التحويل ده متسجل بالفعل — هراجع الرصيد بس', 'ok'); return true; }
+        return recordTransfer(from, to, amount, fee, note);
+      }
+      if (kind === 'personal' || kind === 'work') {
+        const title = $('#smsTitle').value.trim() || $('#smsCat').value;
+        const r = await save('expenses', 'add', null, { kind: kind === 'work' ? 'شغل' : 'شخصي', date: day, title, category: $('#smsCat').value, amount: String(amount + fee), notes: note, wallet });
+        return r && syncTx(`exp:${r.row}`, { date: day, type: 'مصروف', wallet, amount, fee, category: $('#smsCat').value, desc: title });
+      }
+      if (kind === 'obligation') {
+        const v = $('#smsObl')?.value || '';
+        if (v.startsWith('s:')) return payObligation(S.subscriptions.find(x => x.id === v.slice(2)), wallet, { amount, fee });
+        if (v.startsWith('i:')) return payInstallment(S.installments.find(x => x.id === v.slice(2)), wallet, { amount, fee });
+        return syncTx(`man:${Date.now()}`, { date: day, type: 'مصروف', wallet, amount, fee, category: 'التزامات', desc: note || 'دفع التزام' });
+      }
+      return save('walletTx', 'add', null, { date: day, wallet, type: st.type === 'in' ? 'دخل' : 'مصروف', amount: String(amount), fee: fee ? String(fee) : '', balanceAfter: '', category: st.type === 'in' ? 'دخل مش متصنف' : 'مش متصنف', desc: note, toWallet: '', ref: '' });
+    }, 'اتسجلت ✓');
+    if (!ok) { $('#smsSave').disabled = false; return; }
+    closeSheet();
+    // الرسالة فيها الرصيد الحقيقي: نقارنه باللي الأبلكيشن حاسبه
+    if (st.balance != null) afterBalanceKnown(wallet, st.balance);
+  };
+}
+
+async function recordTransfer(from, to, amount, fee = 0, note = '') {
+  const day = D.sheetDay(new Date());
+  const r = await save('walletTx', 'add', null, { date: day, wallet: from, type: 'تحويل', amount: String(Math.round(amount)), fee: fee ? String(fee) : '', balanceAfter: '', category: '', desc: note || `تحويل من ${from} لـ ${to}`, toWallet: to, ref: '' });
+  if (!r) return false;
+  // لو رايحة لمحفظة ادخار/طوارئ (أو جاية منها) تتسجل كمان في خزنة الادخار
+  const toW = S.wallets.find(w => w.name === to), fromW = S.wallets.find(w => w.name === from);
+  if (toW?.isSaving && !fromW?.isSaving) await save('savings', 'add', null, { date: day, bucket: /طوارئ/.test(toW.purpose) ? 'طوارئ' : 'ادخار', type: 'إيداع', amount: String(Math.round(amount)), currency: 'جنيه', ref: `wt:${r.row}`, notes: `اتحول لـ ${to}` });
+  if (fromW?.isSaving && !toW?.isSaving) await save('savings', 'add', null, { date: day, bucket: /طوارئ/.test(fromW.purpose) ? 'طوارئ' : 'ادخار', type: 'سحب', amount: String(Math.round(amount)), currency: 'جنيه', ref: `wt:${r.row}`, notes: `اتسحب لـ ${to}` });
+  return r;
+}
+
+function openTransferSheet() {
+  if (S.wallets.length < 2) { toast('محتاج محفظتين على الأقل — ضيف محفظة الادخار', 'err'); openForm('wallets'); return; }
+  const from = defaultWallet(), to = S.wallets.find(w => w.isSaving && w.name !== from)?.name || S.wallets.find(w => w.name !== from)?.name;
+  openSheet({
+    title: `${ic('arrow-left-right')} تحويل بين محافظي`,
+    body: `<div class="form">
+      <div class="field"><label>${ic('arrow-up-right')} من</label><select id="tfFrom">${walletOptions(from)}</select></div>
+      <div class="field"><label>${ic('arrow-down-left')} إلى</label><select id="tfTo">${walletOptions(to)}</select></div>
+      <div class="field"><label>${ic('coins')} المبلغ</label><input id="tfAmt" inputmode="decimal"></div>
+      <div class="field"><label>${ic('percent')} رسوم التحويل (لو فيه)</label><input id="tfFee" inputmode="decimal"></div>
+      <div class="field full"><label>${ic('sticky-note')} ملاحظة</label><input id="tfNote" placeholder="مثلاً: تحويش الشهر"></div>
+    </div><p class="muted small">${ic('info')} لو المحفظة اللي رايحلها محفظة ادخار أو طوارئ، المبلغ هيتسجل كمان في "الادخار والأهداف".</p>`,
+    foot: `<button class="btn primary" id="tfSave">${ic('check')} سجّل التحويل</button><button class="btn ghost" id="tfCancel">إلغاء</button>`,
+  });
+  $('#tfCancel').onclick = () => closeSheet();
+  $('#tfSave').onclick = async () => {
+    const f = $('#tfFrom').value, t = $('#tfTo').value, amount = Number(D.toLatin($('#tfAmt').value).replace(/[^\d.]/g, '')) || 0, fee = Number(D.toLatin($('#tfFee').value).replace(/[^\d.]/g, '')) || 0;
+    if (f === t) return toast('اختار محفظتين مختلفين', 'err');
+    if (!amount) return toast('اكتب المبلغ', 'err');
+    $('#tfSave').disabled = true;
+    if (await batch(() => recordTransfer(f, t, amount, fee, $('#tfNote').value.trim()), 'اتسجل التحويل ✓')) { closeSheet(); confetti(); } else $('#tfSave').disabled = false;
+  };
+}
+
+/* ── مطابقة الرصيد: اللي في المحفظة فعلاً مقابل اللي الأبلكيشن حاسبه ── */
+function afterBalanceKnown(walletName, actual) {
+  const w = S.wallets.find(x => x.name === walletName);
+  if (!w) return;
+  const diff = actual - w.balance;
+  if (Math.abs(diff) < 1) { save('walletTx', 'add', null, { date: D.sheetDay(new Date()), wallet: walletName, type: 'مطابقة', amount: '0', fee: '', balanceAfter: String(actual), category: '', desc: 'مطابقة من رسالة المحفظة', toWallet: '', ref: '' }); return; }
+  openCheckSheet(walletName, actual);
+}
+
+function openCheckSheet(walletName = defaultWallet(), actual = '') {
+  openSheet({
+    title: `${ic('scale')} طابق رصيد المحفظة`,
+    body: `<div class="form">
+      <div class="field"><label>${ic('wallet')} المحفظة</label><select id="ckW">${walletOptions(walletName)}</select></div>
+      <div class="field"><label>${ic('coins')} الرصيد الحقيقي دلوقتي</label><input id="ckAmt" inputmode="decimal" value="${actual}" placeholder="من أبلكيشن المحفظة أو آخر رسالة"></div>
+    </div><div id="ckOut" style="margin-top:14px"></div>`,
+    foot: `<button class="btn primary" id="ckSave">${ic('check')} سجّل</button><button class="btn ghost" id="ckCancel">إلغاء</button>`,
+  });
+  const out = () => {
+    const w = S.wallets.find(x => x.name === $('#ckW').value), a = Number(D.toLatin($('#ckAmt').value).replace(/[^\d.-]/g, ''));
+    if (!w || $('#ckAmt').value.trim() === '' || isNaN(a)) { $('#ckOut').innerHTML = `<p class="muted small">الأبلكيشن حاسب إن معاك ${I.money(w?.balance || 0)} في ${esc(w?.name || '')}.</p>`; return; }
+    const diff = a - w.balance;
+    $('#ckOut').innerHTML = `<div class="result-grid" style="margin-top:0">${result('الأبلكيشن حاسب', I.money(w.balance))}${result('معاك فعلاً', I.money(a), true)}${result('الفرق', (diff >= 0 ? '+' : '−') + I.fmt(Math.abs(diff)))}</div>
+      ${Math.abs(diff) < 1 ? `<p class="small" style="color:var(--good-text)">${ic('badge-check')} مظبوط، كل حاجة متسجلة.</p>`
+        : diff < 0 ? `<div class="card insight t-warning" style="margin-top:12px;box-shadow:none"><div class="ins-icon tone-warning">${ic('search')}</div><div><h4>فيه ${I.money(-diff)} خرجوا ومش متسجلين</h4><p>هيتسجلوا "مصاريف مش متسجلة" (شخصي) عشان تقفيل الشهر يبقى صح. لو فاكر صرفتهم في إيه اكتبها:</p>
+            <div class="form" style="margin-top:8px"><div class="field full"><input id="ckWhat" placeholder="مثلاً: مشاوير، أكل برّه…"></div></div></div></div>`
+        : `<div class="card insight t-info" style="margin-top:12px;box-shadow:none"><div class="ins-icon tone-info">${ic('search')}</div><div><h4>فيه ${I.money(diff)} دخلوا ومش متسجلين</h4><p>ممكن تحويل من عميل ما اتسجلش. لو كده سجّله من "الصق رسالة المحفظة"، أو سجّل الفرق كتسوية دلوقتي.</p></div></div>`}`;
+    paint();
+  };
+  $('#ckW').onchange = out; $('#ckAmt').oninput = out; out();
+  $('#ckCancel').onclick = () => closeSheet();
+  $('#ckSave').onclick = async () => {
+    const wn = $('#ckW').value, w = S.wallets.find(x => x.name === wn), a = Number(D.toLatin($('#ckAmt').value).replace(/[^\d.-]/g, ''));
+    if ($('#ckAmt').value.trim() === '' || isNaN(a)) return toast('اكتب الرصيد', 'err');
+    const diff = a - w.balance, day = D.sheetDay(new Date()), what = $('#ckWhat')?.value.trim();
+    $('#ckSave').disabled = true;
+    const ok = await batch(async () => {
+      if (diff <= -1) {
+        const r = await save('expenses', 'add', null, { kind: 'شخصي', date: day, title: what || 'مصاريف مش متسجلة', category: 'مصاريف شخصية تانية', amount: String(Math.round(-diff)), notes: 'من مطابقة المحفظة', wallet: wn });
+        if (!r) return false;
+        await syncTx(`exp:${r.row}`, { date: day, type: 'مصروف', wallet: wn, amount: -diff, category: 'مصاريف مش متسجلة', desc: what || 'فرق المطابقة' });
+      } else if (diff >= 1) {
+        await save('walletTx', 'add', null, { date: day, wallet: wn, type: 'تسوية', amount: String(Math.round(diff)), fee: '', balanceAfter: '', category: 'دخل مش متسجل', desc: 'فرق المطابقة', toWallet: '', ref: '' });
+      }
+      return save('walletTx', 'add', null, { date: day, wallet: wn, type: 'مطابقة', amount: '0', fee: '', balanceAfter: String(a), category: '', desc: 'مطابقة الرصيد', toWallet: '', ref: '' });
+    }, 'اتطابق الرصيد ✓');
+    if (ok) closeSheet(); else $('#ckSave').disabled = false;
+  };
 }
 
 /* ═════════════ التحويلات والمدفوعات ═════════════ */
@@ -1430,8 +1827,12 @@ function openPaymentForm(item = null, pre = {}) {
     if (item) ok = await save('payments', 'update', item._row, values, checkFor('payments', item), file, link);
     else {
       const confirmed = $('#payConfirmNow').checked, apply = confirmed && proj && $('#payApply').checked;
-      if (apply && !(await save('clients', 'update', proj._row, paymentValues(proj, amountInProject(proj, amount, values.currency)), checkFor('clients', proj)))) { $('#paySave').disabled = false; return; }
-      ok = await save('payments', 'add', null, { ...values, status: confirmed ? D.PAY_STATUS.confirmed : D.PAY_STATUS.pending, applied: apply ? 'نعم' : '' }, null, file, link);
+      ok = await batch(async () => {
+        if (apply && !(await save('clients', 'update', proj._row, paymentValues(proj, amountInProject(proj, amount, values.currency)), checkFor('clients', proj)))) return false;
+        const r = await save('payments', 'add', null, { ...values, status: confirmed ? D.PAY_STATUS.confirmed : D.PAY_STATUS.pending, applied: apply ? 'نعم' : '' }, null, file, link);
+        if (r && confirmed) await paymentToWallet(r.row, { amount, currency: values.currency, client: values.client, date: values.date });
+        return r;
+      }, 'اتحفظ ✓');
     }
     if (ok) { S.receiptDraft = null; closeSheet(); if (!item) confetti(); } else $('#paySave').disabled = false;
   };
@@ -1442,13 +1843,42 @@ function linkedProject(p) {
   return S.projects.find(x => x._row === p.projectRowN && (!p.client || x.displayName === D.cleanName(p.client))) || null;
 }
 
-async function confirmPayment(p, apply = true) {
+async function confirmPayment(p, apply = true, walletOverride = null) {
   const proj = linkedProject(p);
   const doApply = apply && proj && !p.applied;
-  if (doApply && !(await save('clients', 'update', proj._row, paymentValues(proj, amountInProject(proj, p.amountN, p.currency)), checkFor('clients', proj)))) return false;
-  const ok = await save('payments', 'update', p._row, { status: D.PAY_STATUS.confirmed, applied: doApply || p.applied ? 'نعم' : '' }, checkFor('payments', p));
+  const run = async () => {
+    if (doApply && !(await save('clients', 'update', proj._row, paymentValues(proj, amountInProject(proj, p.amountN, p.currency)), checkFor('clients', proj)))) return false;
+    const r = await save('payments', 'update', p._row, { status: D.PAY_STATUS.confirmed, applied: doApply || p.applied ? 'نعم' : '' }, checkFor('payments', p));
+    if (r) await paymentToWallet(p._row, { amount: p.amountN, currency: p.currency, client: p.client, date: D.sheetDay(new Date()) }, walletOverride);
+    return r;
+  };
+  const ok = S.batching ? await run() : await batch(run, 'اتأكد التحويل ✓');
   if (ok) confetti();
   return ok;
+}
+
+// قسط الشهر اتدفع: يتعلّم في الأقساط ويتخصم من المحفظة
+function payInstallment(i, wallet = null, extra = {}) {
+  const key = D.monthKey(new Date());
+  const run = async () => {
+    if (!(await save('installments', 'update', i._row, { paidCount: String(i.paidCount + 1), lastPaid: key }, checkFor('installments', i)))) return false;
+    await syncTx(`inst:${i._row}:${key}`, { type: 'مصروف', wallet: realWallet(wallet) || defaultWallet(), amount: extra.amount ?? i.monthlyEGP, fee: extra.fee || '', category: 'أقساط', desc: i.name });
+    return true;
+  };
+  return S.batching ? run() : batch(run, `اتسجل قسط ${i.name} ✓`);
+}
+// اشتراك أو التزام شهري (إيجار، مرتب…) اتدفع الشهر ده
+function payObligation(s, wallet = null, extra = {}) {
+  const key = D.monthKey(new Date());
+  const run = () => syncTx(`sub:${s._row}:${key}`, { type: 'مصروف', wallet: realWallet(wallet) || defaultWallet(), amount: extra.amount ?? s.priceEGP, fee: extra.fee || '', category: s.category || 'اشتراكات والتزامات', desc: s.name });
+  return S.batching ? run() : batch(run, `اتسجل دفع ${s.name} ✓`);
+}
+
+// تحويل العميل اتأكد ← الفلوس دخلت المحفظة اللي بتستلم عليها
+function paymentToWallet(payRow, { amount, currency, client, date }, walletOverride = null) {
+  const wallet = realWallet(walletOverride) || defaultWallet();
+  if (!wallet) return { ok: true };
+  return syncTx(`pay:${payRow}`, { date, type: 'دخل', wallet, amount: D.toEGP(Number(amount) || 0, currency, S.settings), category: 'فلوس عملاء', desc: `تحويل من ${client || 'عميل'}` });
 }
 
 function openPaymentDetail(p) {
@@ -1754,7 +2184,7 @@ VIEWS.tools = {
     const t = S.toolTab;
     const tabs = `<div class="seg" id="ttabs" style="margin-bottom:16px;flex-wrap:wrap">${[['quote', 'عرض سعر للعميل'], ['msgs', 'رسائل جاهزة'], ['royalty', 'أرباح KDP'], ['cover', 'مقاس الغلاف والكعب'], ['ads', 'حاسبة الإعلانات']].map(([v, l]) => `<button class="${t === v ? 'on' : ''}" data-v="${v}">${l}</button>`).join('')}</div>`;
     if (t === 'msgs') {
-      const list = templates(S.settings.prices[S.quoteMkt], S.quoteMkt);
+      const list = tplList();
       return tabs + `<div class="row between" style="margin-bottom:14px">${mktSeg('mMkt')}<span class="muted small">${ic('info')} الأسعار في الرسايل بتتاخد من الإعدادات، فلو غيرت سعر هيتغير هنا لوحده.</span></div>
       <div class="grid g-2">${list.map(x => `<div class="card"><div class="card-head"><h3>${ic(x.icon)} ${esc(x.title)}</h3></div>
         <pre class="msg" style="max-height:230px;overflow:auto;margin-top:0">${esc(x.text)}</pre>
@@ -1778,7 +2208,19 @@ VIEWS.tools = {
         </div>
       </div>
       <div class="card"><div class="card-head"><h3>${ic('receipt-text')} العرض</h3></div><div id="qOut"></div></div>
-    </div>`;
+    </div>
+    <details class="card" id="qTplBox" style="margin-top:16px" ${S.qTplOpen ? 'open' : ''}>
+      <summary class="row between" style="cursor:pointer;list-style:none"><h3 style="font-size:16px" class="row">${ic('pencil-line')} عدّل شكل الرسالة ورقم التحويل</h3><span class="muted small">بيتحفظ على الموبايل واللابتوب</span></summary>
+      <div class="form" style="margin-top:14px">
+        <div class="field"><label>${ic('smartphone')} رقم فودافون كاش اللي العميل يحوّل عليه</label><input id="qVf" dir="ltr" inputmode="tel" value="${esc(getApp('vfNumber'))}" placeholder="010xxxxxxxx"></div>
+        <div class="field"><label>${ic('zap')} إنستاباي (اختياري)</label><input id="qInsta" dir="ltr" value="${esc(getApp('instapay'))}" placeholder="name@instapay"></div>
+      </div>
+      <p class="muted small" style="margin:14px 0 8px">${ic('info')} الكلام اللي بين {} بيتملي لوحده من الحاسبة، وأي كلام تاني اكتبه زي ما تحب. دوس على أي واحد تحت عشان تحطه مكان المؤشر:</p>
+      <div class="chips" style="flex-wrap:wrap;margin-bottom:8px">${D.QUOTE_PLACEHOLDERS.map(p => `<button type="button" class="chip" data-ph="${p}">${p}</button>`).join('')}</div>
+      <textarea id="qTpl" class="msg msg-edit" style="min-height:240px">${esc(getApp('quoteTemplate') || D.DEFAULT_QUOTE_TEMPLATE)}</textarea>
+      <p class="muted small" style="margin:8px 0 0">سطر {طريقة_الدفع} بيتغير حسب البلد (مصر أو السعودية)، وتعدّله من <a href="#/settings" style="color:var(--accent)">الإعدادات ← أسعار خدماتك</a>.</p>
+      <div class="row" style="margin-top:10px"><button class="btn primary sm" id="qTplSave">${ic('check')} حفظ</button><button class="btn ghost sm" id="qTplReset">${ic('rotate-ccw')} رجّع الرسالة الافتراضية</button></div>
+    </details>`;
     if (t === 'royalty') return tabs + `<div class="grid g-main" id="tool">
       <div class="card"><div class="card-head"><h3>${ic('book-open')} بيانات الكتاب</h3></div>
         <div class="seg" id="rFmt" style="margin-bottom:14px"><button class="on" data-v="ebook">Kindle eBook</button><button data-v="paper">Paperback</button></div>
@@ -1808,18 +2250,39 @@ VIEWS.tools = {
     $$('#ttabs button').forEach(b => b.onclick = () => { S.toolTab = b.dataset.v; renderView(true); });
     $$('#qMkt button, #mMkt button').forEach(b => b.onclick = () => { S.quoteMkt = b.dataset.v; renderView(true); });
     if (S.toolTab === 'msgs') {
-      const list = templates(S.settings.prices[S.quoteMkt], S.quoteMkt);
+      const list = tplList();
       $$('[data-tcopy]').forEach(b => b.onclick = () => navigator.clipboard.writeText(list.find(x => x.id === b.dataset.tcopy).text).then(() => toast('اتنسخت الرسالة', 'ok')));
       return;
     }
     const tool = $('#tool');
-    if (S.toolTab === 'quote') { S.qDaysTouched = false; $('#qDays').addEventListener('input', () => { S.qDaysTouched = true; }); }
+    if (S.toolTab === 'quote') {
+      S.qDaysTouched = false; $('#qDays').addEventListener('input', () => { S.qDaysTouched = true; });
+      const box = $('#qTplBox'), tpl = $('#qTpl');
+      box.addEventListener('toggle', () => { S.qTplOpen = box.open; });
+      $$('[data-ph]').forEach(b => b.onclick = () => {
+        const s = tpl.selectionStart ?? tpl.value.length, e = tpl.selectionEnd ?? s;
+        tpl.value = tpl.value.slice(0, s) + b.dataset.ph + tpl.value.slice(e); tpl.focus(); tpl.selectionStart = tpl.selectionEnd = s + b.dataset.ph.length;
+      });
+      const saveVals = async (pairs, msg) => { const ok = await batch(async () => { for (const [k, v] of pairs) if (!(await setApp(k, v))) return false; return true; }, msg); if (ok) calcQuote(); };
+      $('#qTplSave').onclick = () => (S.qTplOpen = true) && saveVals([['quoteTemplate', tpl.value.trim() === D.DEFAULT_QUOTE_TEMPLATE.trim() ? '' : tpl.value], ['vfNumber', $('#qVf').value.trim()], ['instapay', $('#qInsta').value.trim()]], 'اتحفظت الرسالة ✓');
+      $('#qTplReset').onclick = () => { tpl.value = D.DEFAULT_QUOTE_TEMPLATE; saveVals([['quoteTemplate', '']], 'رجعت الرسالة الافتراضية'); };
+    }
     const run = { quote: calcQuote, royalty: calcRoyalty, cover: calcCover, ads: calcAds }[S.toolTab];
     tool.addEventListener('input', run); tool.addEventListener('change', run);
     $$('#rFmt button').forEach(b => b.onclick = () => { $$('#rFmt button').forEach(x => x.classList.toggle('on', x === b)); calcRoyalty(); });
     run();
   },
 };
+
+// الرسايل الجاهزة بأسعار البلد المختارة، ورقم فودافون كاش متحط فيها
+const tplList = () => { const P = S.settings.prices[S.quoteMkt]; return templates({ ...P, payment: fillPayment(P.payment) }, S.quoteMkt); };
+
+// بيملى القالب: أي سطر فاضي بسبب مكان مالوش قيمة بيتشال، ومفيش أكتر من سطر فاضي ورا بعض
+function buildFromTemplate(tpl, parts) {
+  let out = String(tpl);
+  Object.entries(parts).forEach(([k, v]) => { out = out.split(k).join(v); });
+  return fillPayment(out).replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+}
 
 // "150 صفحة" / "3 كتب" / "1 شهر"
 const cnt = (n, one, few) => `${n} ${n >= 2 && n <= 10 ? few : one}`;
@@ -1869,7 +2332,6 @@ function calcQuote() {
   if (on('poster')) add(`بوستر / موك أب دعائي (${cnt(n('poster'), 'تصميم', 'تصميمات')})`, P.poster * n('poster'));
   if (on('reel')) { add(`فيديو Reels دعائي (${cnt(n('reel'), 'دقيقة', 'دقائق')})`, P.reelMin * n('reel')); notes.push('سعر فيديوهات Reels بيبدأ من السعر المذكور ويتحدد نهائيًا حسب المطلوب.'); }
   if (on('marketing')) add(`خطة تسويق متكاملة على فيسبوك وإنستجرام (${cnt(n('marketing'), 'شهر', 'شهور')})`, P.marketingMonth * n('marketing'));
-  notes.push(P.payment);
 
   const disc = Math.min(num('qDisc', 0), 90), step = mkt === 'EG' ? 10 : 5;
   const subtotal = sum(lines, l => l.amount);
@@ -1893,30 +2355,33 @@ function calcQuote() {
   }
   const days = num('qDays', 0);
 
-  const msg = [
-    'أهلًا بحضرتك،',
-    'تفاصيل عرض السعر الخاص بكتابك:',
-    '',
-    ...lines.map(l => `- ${l.label}: ${l.custom || `${I.fmt(l.amount)} ${cur}`}`),
-    ...(disc ? [`- خصم خاص: ${disc}%`] : []),
-    '',
-    `الإجمالي: ${I.fmt(total)} ${cur}`,
-    `المقدم المطلوب لتأكيد الحجز والبدء (50%): ${I.fmt(deposit)} ${cur}، والباقي عند التسليم.`,
-    ...(days ? [`مدة التنفيذ المتوقعة: حوالي ${cnt(days, 'يوم', 'أيام')} عمل من استلام المقدم والملفات.`] : []),
-    ...($('#qNotes').checked ? ['', 'ملاحظات:', ...notes.map(x => `- ${x}`)] : []),
-  ].join('\n');
+  // الرسالة بتتبني من القالب اللي إنت عدّلته (أو الافتراضي)، والأماكن اللي بين {} بتتملي لوحدها
+  const parts = {
+    '{البنود}': [...lines.map(l => `- ${l.label}: ${l.custom || `${I.fmt(l.amount)} ${cur}`}`), ...(disc ? [`- خصم خاص: ${disc}%`] : [])].join('\n'),
+    '{الإجمالي}': `${I.fmt(total)} ${cur}`,
+    '{المقدم}': `${I.fmt(deposit)} ${cur}`,
+    '{المدة}': days ? `مدة التنفيذ المتوقعة: حوالي ${cnt(days, 'يوم', 'أيام')} عمل من استلام المقدم والملفات.` : '',
+    '{الملاحظات}': $('#qNotes').checked && notes.length ? ['ملاحظات:', ...notes.map(x => `- ${x}`)].join('\n') : '',
+    '{طريقة_الدفع}': fillPayment(P.payment),
+  };
+  const msg = buildFromTemplate(getApp('quoteTemplate') || D.DEFAULT_QUOTE_TEMPLATE, parts);
+  const noVf = !getApp('vfNumber').trim();
 
   $('#qOut').innerHTML = lines.length ? `
     <div class="result-grid" style="margin-top:0">${result('الإجمالي', `${I.fmt(total)} ${cur}`, true)}${result('المقدم 50%', `${I.fmt(deposit)} ${cur}`)}${result('مدة التنفيذ', days ? cnt(days, 'يوم', 'أيام') : '—')}</div>
     ${cheaper ? `<p class="small" style="color:var(--good-text);margin:12px 0 0">${ic('lightbulb')} ${cheaper}</p>` : ''}
-    <pre class="msg" id="qMsg">${esc(msg)}</pre>
+    ${noVf ? `<p class="small" style="color:var(--warning-text);margin:12px 0 0">${ic('triangle-alert')} اكتب رقم فودافون كاش اللي العميل يحوّل عليه من <a href="#/settings" style="color:var(--accent)">الإعدادات</a> عشان يظهر في الرسالة.</p>` : ''}
+    <label class="muted small" style="display:block;margin-top:12px">${ic('pencil')} الرسالة (تقدر تعدّل فيها قبل ما تبعت)</label>
+    <textarea class="msg msg-edit" id="qMsg">${esc(msg)}</textarea>
     <div class="row" style="margin-top:12px">
       <button class="btn" id="qCopy">${ic('copy')} نسخ</button>
-      <a class="btn wa" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(msg)}">${ic('send')} ابعت واتساب</a>
+      <button class="btn wa" id="qWa">${ic('send')} ابعت واتساب</button>
       <button class="btn primary" id="qSave">${ic('user-plus')} سجّله كعميل</button>
     </div>` : emptyState('mouse-pointer-click', 'اختار خدمة واحدة على الأقل', '');
   paint();
-  $('#qCopy') && ($('#qCopy').onclick = () => navigator.clipboard.writeText(msg).then(() => toast('اتنسخ', 'ok')));
+  const finalMsg = () => $('#qMsg')?.value || msg;
+  $('#qCopy') && ($('#qCopy').onclick = () => navigator.clipboard.writeText(finalMsg()).then(() => toast('اتنسخ', 'ok')));
+  $('#qWa') && ($('#qWa').onclick = () => window.open(`https://wa.me/?text=${encodeURIComponent(finalMsg())}`, '_blank', 'noopener'));
   $('#qSave') && ($('#qSave').onclick = () => openForm('clients', null, {
     date: D.sheetDay(new Date()), project: lines.map(l => l.label.replace(/\s*\(.*\)/, '')).join(' + '), pages: pages || '',
     books: on('ebook') || on('paper') ? String(Math.max(on('ebook') ? n('ebook') : 0, on('paper') ? n('paper') : 0)) : '',
@@ -2033,6 +2498,15 @@ VIEWS.settings = {
       </div>
     </div>
     <div class="card">
+      <div class="card-head"><h3>${ic('smartphone')} بيانات الدفع</h3><span class="sub">بتتحفظ في الشيت</span></div>
+      <div class="form">
+        <div class="field"><label>${ic('smartphone')} رقم فودافون كاش للعملاء</label><input id="sVf" dir="ltr" inputmode="tel" value="${esc(getApp('vfNumber'))}" placeholder="010xxxxxxxx"></div>
+        <div class="field"><label>${ic('zap')} إنستاباي (اختياري)</label><input id="sInsta" dir="ltr" value="${esc(getApp('instapay'))}" placeholder="name@instapay"></div>
+        ${S.wallets.length ? `<div class="field full"><label>${ic('wallet-cards')} المحفظة اللي بتستلم فيها فلوس العملاء وبتصرف منها</label><select id="sMainW">${walletOptions(defaultWallet())}</select></div>` : ''}
+      </div>
+      <p class="muted small" style="margin-bottom:0">${ic('info')} الرقم بيظهر لوحده في رسالة عرض السعر وقائمة الأسعار مكان {رقم_فودافون_كاش}.</p>
+    </div>
+    <div class="card">
       <div class="card-head"><h3>${ic('download')} تثبيت التطبيق</h3>${standalone ? `<span class="badge tone-good">${ic('check')}متثبت</span>` : ''}</div>
       ${S.installPrompt ? `<button class="btn primary" id="sInstall">${ic('download')} ثبّت KDP Hub على الجهاز ده</button>` : `<button class="btn" data-act="install-help">${ic('smartphone')} خطوات التثبيت على الموبايل</button>`}
       <ul class="steps" style="margin-top:12px">
@@ -2050,7 +2524,7 @@ VIEWS.settings = {
       </div>
     </div>
     <div class="card span-2">
-      <div class="card-head"><h3>${ic('database')} البيانات</h3></div>
+      <div class="card-head"><h3>${ic('database')} البيانات</h3><span class="sub">نسخة الأبلكيشن ${APP_VERSION}${hasRemote() ? ` · كود الشيت ${S.serverVersion || 1}` : ''}</span></div>
       <div class="row"><button class="btn" id="dExport">${ic('file-down')} تنزيل نسخة احتياطية (JSON)</button>
       ${!hasRemote() ? `<button class="btn" id="dReset">${ic('rotate-ccw')} رجّع البيانات التجريبية</button><button class="btn danger" id="dEmpty">${ic('eraser')} ابدأ بدون بيانات تجريبية</button>` : `<button class="btn" id="dClear">${ic('eraser')} امسح النسخة المحفوظة على الجهاز</button>`}</div>
     </div></div>`;
@@ -2089,9 +2563,15 @@ VIEWS.settings = {
     $('#sTheme').onchange = e => { st.theme = e.target.value; persist('اتغير المظهر'); applyTheme(); renderView(true); };
     $('#sSar').onchange = e => { st.sarRate = Number(e.target.value) || 13; persist(); processData(); };
     $('#sUsd').onchange = e => { st.usdRate = Number(e.target.value) || 50; persist(); processData(); };
-    $$('[data-price]').forEach(i => i.onchange = () => { const [m, k] = i.dataset.price.split(':'); st.prices[m][k] = Number(D.toLatin(i.value).replace(/[^\d.]/g, '')) || 0; persist(); });
-    $$('[data-pay]').forEach(t => t.onchange = () => { st.prices[t.dataset.pay].payment = t.value.trim(); persist(); });
-    $('#rReset').onclick = () => { st.prices = JSON.parse(JSON.stringify(D.DEFAULT_PRICES)); persist('رجعت أسعار القائمة'); renderView(true); };
+    // الأسعار بتتحفظ في الشيت كمان، عشان تبقى نفسها على الموبايل واللابتوب
+    let priceTimer;
+    const syncPrices = () => { clearTimeout(priceTimer); priceTimer = setTimeout(() => setApp('prices', JSON.stringify(st.prices)), 1200); };
+    $$('[data-price]').forEach(i => i.onchange = () => { const [m, k] = i.dataset.price.split(':'); st.prices[m][k] = Number(D.toLatin(i.value).replace(/[^\d.]/g, '')) || 0; D.saveSettings(st); syncPrices(); });
+    $$('[data-pay]').forEach(t => t.onchange = () => { st.prices[t.dataset.pay].payment = t.value.trim(); D.saveSettings(st); syncPrices(); });
+    $('#rReset').onclick = () => { st.prices = JSON.parse(JSON.stringify(D.DEFAULT_PRICES)); D.saveSettings(st); setApp('prices', ''); toast('رجعت أسعار القائمة', 'ok'); };
+    $('#sVf').onchange = e => setApp('vfNumber', e.target.value.trim());
+    $('#sInsta').onchange = e => setApp('instapay', e.target.value.trim());
+    $('#sMainW') && ($('#sMainW').onchange = e => setApp('mainWallet', e.target.value));
     $('#sInstall') && ($('#sInstall').onclick = async () => { S.installPrompt.prompt(); await S.installPrompt.userChoice; S.installPrompt = null; renderView(true); });
     $('#dExport').onclick = () => {
       const blob = new Blob([JSON.stringify(S.raw, null, 2)], { type: 'application/json' });
@@ -2193,7 +2673,13 @@ function readForm(schema, root) {
 
 function openForm(sheet, item = null, prefill = {}) {
   const schema = SCHEMAS[sheet].filter(f => !f.auto || item);
-  const defaults = { subscriptions: { currency: 'دولار', cycle: 'شهري', status: 'شغال' }, installments: { status: 'شغال', paidCount: '0' }, expenses: { kind: 'شغل' } }[sheet] || {};
+  const dw = defaultWallet() || '—';
+  const defaults = {
+    subscriptions: { currency: 'دولار', cycle: 'شهري', status: 'شغال' }, installments: { status: 'شغال', paidCount: '0' },
+    expenses: { kind: 'شغل', wallet: dw }, otherIncome: { wallet: dw },
+    wallets: { kind: 'فودافون كاش', purpose: S.wallets.length ? 'ادخار' : 'صرف', openingDate: D.sheetDay(new Date()) },
+    walletTx: { wallet: dw, type: 'مصروف' },
+  }[sheet] || {};
   const vals = item || { ...defaults, ...prefill };
   const clientNames = [...new Set(S.projects.map(p => p.displayName))];
   openSheet({
@@ -2228,10 +2714,37 @@ function openForm(sheet, item = null, prefill = {}) {
       if (!Object.keys(values).length) return item && sheet === 'clients' ? openProject(item.id) : closeSheet();
     }
     $('#fSave').disabled = true;
-    const ok = await save(sheet, item ? 'update' : 'add', item?._row ?? null, values, item ? checkFor(sheet, item) : null);
+    const doSave = () => save(sheet, item ? 'update' : 'add', item?._row ?? null, values, item ? checkFor(sheet, item) : null);
+    // المصروفات والدخل والادخار والمحافظ ليهم حركة مربوطة في المحافظ بتتحدث معاهم
+    const ok = WALLET_LINKED.includes(sheet) && (S.wallets.length || sheet === 'wallets')
+      ? await batch(async () => { const r = await doSave(); if (!r) return false; await afterFormSave(sheet, item, values, item ? item._row : r.row); return r; }, item ? 'اتعدل ✓' : 'اتحفظ ✓')
+      : await doSave();
     if (ok) { if (item && sheet === 'clients') { S.openProjectId = item.id; refreshOpenProject(); } else closeSheet(); if (!item) confetti(); }
     else $('#fSave').disabled = false;
   };
+}
+
+const WALLET_LINKED = ['expenses', 'otherIncome', 'savings', 'wallets'];
+const unitWord = c => c === 'SAR' ? 'ريال' : c === 'USD' ? 'دولار' : 'جنيه';
+
+async function afterFormSave(sheet, item, changed, row) {
+  const full = { ...(item || {}), ...changed };
+  if (sheet === 'expenses') {
+    const m = D.parseMoney(full.amount);
+    return syncTx(`exp:${row}`, realWallet(full.wallet) ? { date: full.date, type: 'مصروف', wallet: full.wallet, amount: D.toEGP(m.amount, unitWord(m.currency), S.settings), category: full.category, desc: full.title } : null);
+  }
+  if (sheet === 'otherIncome') {
+    const n = Number(D.toLatin(full.amount).replace(/[^\d.]/g, '')) || 0;
+    return syncTx(`inc:${row}`, realWallet(full.wallet) ? { date: full.date, type: 'دخل', wallet: full.wallet, amount: D.toEGP(n, full.currency, S.settings), category: 'دخل تاني', desc: full.source } : null);
+  }
+  if (sheet === 'savings') return linkSavingToWallet(row, full);
+  if (sheet === 'wallets' && item && changed.name && changed.name !== item.name) {
+    // اسم المحفظة اتغير: نحدّثه في كل حركاتها
+    for (const t of S.walletTx.filter(t => t.wallet === item.name || t.toWallet === item.name)) {
+      await save('walletTx', 'update', t._row, { ...(t.wallet === item.name ? { wallet: changed.name } : {}), ...(t.toWallet === item.name ? { toWallet: changed.name } : {}) }, null);
+    }
+  }
+  return { ok: true };
 }
 
 function openQuickAdd() {
@@ -2372,6 +2885,10 @@ document.addEventListener('click', e => {
   const cinc = e.target.closest('[data-cinc]');
   if (cinc) { openIncomeForm(cinc.dataset.cinc); return; }
   if (e.target.closest('[data-act="new-payment"]')) { openPaymentForm(); return; }
+  if (e.target.closest('[data-act="sms"]')) { openSmsSheet(); return; }
+  if (e.target.closest('[data-act="wtransfer"]')) { openTransferSheet(); return; }
+  const wck = e.target.closest('[data-wcheck]');
+  if (wck) { openCheckSheet(wck.dataset.wcheck); return; }
   if (e.target.closest('[data-act="new-campaign"]')) { openCampaignForm(); return; }
   const open = e.target.closest('[data-open]');
   if (open) { openProject(open.dataset.open); return; }
@@ -2468,7 +2985,22 @@ async function checkNotifications() {
 
 function registerSW() {
   if (!('serviceWorker' in navigator)) return;
-  navigator.serviceWorker.register('sw.js').then(() => checkNotifications()).catch(() => {});
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => {
+    checkNotifications();
+    // بيدوّر على نسخة جديدة كل ما الأبلكيشن يتفتح، وكل نص ساعة وهو مفتوح
+    reg.update().catch(() => {});
+    setInterval(() => reg.update().catch(() => {}), 30 * 60 * 1000);
+  }).catch(() => {});
+  // لما نسخة جديدة تتثبت، الصفحة بتعيد تحميل نفسها مرة واحدة عشان تشتغل بالجديد على طول
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || reloaded || $('#sheet') && !$('#sheet').hidden) return;
+    reloaded = true;
+    try { sessionStorage.setItem('kdphub.updated', '1'); } catch { /* */ }
+    location.reload();
+  });
+  try { if (sessionStorage.getItem('kdphub.updated')) { sessionStorage.removeItem('kdphub.updated'); setTimeout(() => toast(`الأبلكيشن اتحدث لآخر نسخة (${APP_VERSION})`, 'ok'), 800); } } catch { /* */ }
   navigator.serviceWorker.addEventListener('message', e => { if (e.data?.href) location.hash = e.data.href; });
 }
 

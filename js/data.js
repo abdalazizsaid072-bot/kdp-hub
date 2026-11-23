@@ -16,14 +16,14 @@ export const DEFAULT_PRICES = {
     cover: 450, cover2: 250, account: 550, ebook: 400, paper: 600,
     reelMin: 300, poster: 350, marketingMonth: 6000,
     bulk1: 400, bulk4: 360, bulk10: 320, pkgLaunch: 2600, pkgContinue: 2100, pkgPages: 150,
-    payment: 'الدفع عن طريق فودافون كاش على رقم الواتساب.',
+    payment: 'للتحويل: فودافون كاش على رقم {رقم_فودافون_كاش}',
   },
   SA: {
     formatText: 3, formatMedia: 5, proofread: 2, translateEn: 30, translateDe: 40,
     cover: 350, cover2: 200, account: 250, ebook: 300, paper: 400,
     reelMin: 300, poster: 200, marketingMonth: 1500,
     bulk1: 300, bulk4: 270, bulk10: 240, pkgLaunch: 900, pkgContinue: 700, pkgPages: 150,
-    payment: 'التحويل عبر تطبيق برق أو أي تطبيق يدعم التحويل للمحافظ الإلكترونية في مصر، على رقم الواتساب.',
+    payment: 'التحويل عبر تطبيق برق أو أي تطبيق يدعم التحويل للمحافظ الإلكترونية في مصر، على رقم فودافون كاش {رقم_فودافون_كاش}',
   },
 };
 export const CURRENCY = { EG: 'جنيه', SA: 'ريال' };
@@ -37,6 +37,8 @@ const DEFAULT_SETTINGS = {
 export function loadSettings() {
   const s = LS.get('settings', {});
   const { rates, ...rest } = s; // "rates" كانت أسعار تقديرية في النسخة الأولى — اتشالت
+  // صيغة الدفع القديمة ("على رقم الواتساب") بتتحدث لوحدها للصيغة اللي فيها رقم فودافون كاش
+  ['EG', 'SA'].forEach(m => { if (/على رقم الواتساب\.?$/.test(s.prices?.[m]?.payment || '')) delete s.prices[m].payment; });
   return {
     ...DEFAULT_SETTINGS, ...rest,
     notify: { ...DEFAULT_SETTINGS.notify, ...(s.notify || {}) },
@@ -117,9 +119,9 @@ export const WORK_CATS = ['مترجمين / فريلانسرز', 'أدوات و�
 export const PERSONAL_CATS = ['أكل وشرب', 'مواصلات وبنزين', 'بيت وفواتير', 'صحة وعلاج', 'لبس', 'خروج وترفيه', 'أهل وهدايا', 'تعليم وكورسات', 'مصاريف شخصية تانية'];
 SCHEMAS.expenses.find(f => f.key === 'category').list = [...WORK_CATS, ...PERSONAL_CATS];
 export const INCOME_SOURCES = ['مرتب شغل KDP', 'أرباح كتب على أمازون', 'شغل فريلانس تاني', 'مكافأة / عمولة', 'دخل تاني'];
-export const SUB_CATEGORIES = ['تصميم', 'ذكاء اصطناعي', 'صوت وفيديو', 'تخزين وأدوات', 'تعليم', 'ترفيه', 'أخرى'];
+export const SUB_CATEGORIES = ['التزامات (إيجار ومرتبات)', 'تصميم', 'ذكاء اصطناعي', 'صوت وفيديو', 'تخزين وأدوات', 'تعليم', 'ترفيه', 'أخرى'];
 // [الاسم، التصنيف] — السعر بتكتبه انت
-export const SUB_PRESETS = [['Canva', 'تصميم'], ['ChatGPT', 'ذكاء اصطناعي'], ['Claude', 'ذكاء اصطناعي'], ['Gemini', 'ذكاء اصطناعي'], ['ElevenLabs', 'صوت وفيديو'], ['CapCut', 'صوت وفيديو'], ['YouTube Premium', 'ترفيه'], ['Adobe', 'تصميم'], ['Freepik', 'تصميم'], ['Google One', 'تخزين وأدوات']];
+export const SUB_PRESETS = [['إيجار', 'التزامات (إيجار ومرتبات)', 'جنيه'], ['مرتب الموظفة', 'التزامات (إيجار ومرتبات)', 'جنيه'], ['Canva', 'تصميم'], ['ChatGPT', 'ذكاء اصطناعي'], ['Claude', 'ذكاء اصطناعي'], ['Gemini', 'ذكاء اصطناعي'], ['ElevenLabs', 'صوت وفيديو'], ['CapCut', 'صوت وفيديو'], ['YouTube Premium', 'ترفيه'], ['Adobe', 'تصميم'], ['Freepik', 'تصميم'], ['Google One', 'تخزين وأدوات']];
 
 SCHEMAS.subscriptions = [
   { key: 'name', label: 'اسم البرنامج', type: 'text', icon: 'app-window', required: true, list: SUB_PRESETS.map(x => x[0]) },
@@ -165,8 +167,10 @@ SCHEMAS.otherIncome = [
   { key: 'source', label: 'المصدر', type: 'text', icon: 'hand-coins', required: true, list: INCOME_SOURCES },
   { key: 'amount', label: 'المبلغ', type: 'money', icon: 'wallet', required: true },
   { key: 'currency', label: 'العملة', type: 'select', icon: 'banknote', options: MONEY_UNITS },
+  { key: 'wallet', label: 'اتحط في محفظة', type: 'select', icon: 'wallet', options: ['—'] },
   { key: 'notes', label: 'ملاحظات', type: 'textarea', icon: 'sticky-note', full: true },
 ];
+SCHEMAS.expenses.splice(SCHEMAS.expenses.findIndex(f => f.key === 'notes'), 0, { key: 'wallet', label: 'اتدفع من محفظة', type: 'select', icon: 'wallet', options: ['—'] });
 
 // تحويل أي مبلغ لجنيه عشان نجمع ونقارن
 export function toEGP(amount, unit, settings) {
@@ -181,7 +185,10 @@ export function toEGP(amount, unit, settings) {
 export const CODE_VERSION_NEEDED = 5;
 export const SHEET_DEFS = {
   tasks:    { title: 'المهام', headers: ['التاريخ', 'المهمة', 'العميل', 'الموعد', 'الأولوية', 'الحالة', 'ملاحظات'], keys: ['date', 'title', 'client', 'due', 'priority', 'status', 'notes'] },
-  expenses: { title: 'المصروفات', headers: ['التاريخ', 'البند', 'الفئة', 'المبلغ', 'ملاحظات', 'النوع (شغل/شخصي)'], keys: ['date', 'title', 'category', 'amount', 'notes', 'kind'] },
+  expenses: { title: 'المصروفات', headers: ['التاريخ', 'البند', 'الفئة', 'المبلغ', 'ملاحظات', 'النوع (شغل/شخصي)', 'اتدفع من'], keys: ['date', 'title', 'category', 'amount', 'notes', 'kind', 'wallet'] },
+  wallets:  { title: 'المحافظ', headers: ['اسم المحفظة', 'النوع', 'الغرض', 'الرصيد الافتتاحي', 'تاريخ الرصيد الافتتاحي', 'رقم المحفظة', 'ملاحظات'], keys: ['name', 'kind', 'purpose', 'opening', 'openingDate', 'number', 'notes'] },
+  walletTx: { title: 'حركة المحافظ', headers: ['التاريخ', 'المحفظة', 'النوع', 'المبلغ', 'الرسوم', 'الرصيد بعدها', 'الفئة', 'الوصف', 'المحفظة التانية', 'مربوط بـ'], keys: ['date', 'wallet', 'type', 'amount', 'fee', 'balanceAfter', 'category', 'desc', 'toWallet', 'ref'] },
+  appSettings: { title: 'إعدادات الأبلكيشن', headers: ['الإعداد', 'القيمة', 'آخر تعديل'], keys: ['name', 'value', 'updated'] },
   ads:      { title: 'حملات Amazon Ads', headers: ['التاريخ', 'الكتاب / العميل', 'الحملة', 'النوع', 'الإنفاق $', 'المبيعات $', 'الطلبات', 'النقرات', 'مرات الظهور', 'ملاحظات'], keys: ['date', 'book', 'campaign', 'type', 'spend', 'sales', 'orders', 'clicks', 'impressions', 'notes'] },
   notes:    { title: 'ملاحظات وأفكار', headers: ['التاريخ', 'العنوان', 'التصنيف', 'التفاصيل'], keys: ['date', 'title', 'category', 'body'] },
   payments: { title: 'المدفوعات', headers: ['التاريخ', 'العميل', 'المشروع', 'رقم صف المشروع', 'المبلغ', 'العملة', 'طريقة الدفع', 'صورة التحويل', 'الحالة', 'اتسجل في حساب العميل', 'ملاحظات'], keys: ['date', 'client', 'project', 'projectRow', 'amount', 'currency', 'method', 'receipt', 'status', 'applied', 'notes'] },
@@ -189,7 +196,7 @@ export const SHEET_DEFS = {
   campaignIncome: { title: 'إيرادات الحملات', headers: ['التاريخ', 'رقم الحملة', 'اسم الحملة', 'العميل', 'الدولة', 'المبلغ', 'العملة', 'ملاحظات'], keys: ['date', 'campaignId', 'campaign', 'client', 'country', 'amount', 'currency', 'notes'] },
   subscriptions: { title: 'الاشتراكات', headers: ['البرنامج', 'التصنيف', 'السعر', 'العملة', 'التجديد', 'تاريخ الدفع', 'الحالة', 'تاريخ الإلغاء', 'طريقة الدفع', 'ملاحظات'], keys: ['name', 'category', 'price', 'currency', 'cycle', 'start', 'status', 'cancelDate', 'method', 'notes'] },
   installments: { title: 'الأقساط', headers: ['القسط', 'المبلغ الكلي', 'القسط الشهري', 'عدد الشهور', 'تاريخ أول قسط', 'اتدفع كام قسط', 'آخر شهر اتدفع', 'العملة', 'الحالة', 'ملاحظات'], keys: ['name', 'total', 'monthly', 'months', 'start', 'paidCount', 'lastPaid', 'currency', 'status', 'notes'] },
-  otherIncome: { title: 'دخل إضافي', headers: ['التاريخ', 'المصدر', 'المبلغ', 'العملة', 'ملاحظات'], keys: ['date', 'source', 'amount', 'currency', 'notes'] },
+  otherIncome: { title: 'دخل إضافي', headers: ['التاريخ', 'المصدر', 'المبلغ', 'العملة', 'ملاحظات', 'اتحط في'], keys: ['date', 'source', 'amount', 'currency', 'notes', 'wallet'] },
   // نظام إدارة الفلوس
   budget:   { title: 'خطة الفلوس', headers: ['الطوارئ %', 'الادخار والأهداف %', 'تشغيل الشغل %', 'المعيشة %', 'فلوس حرة %', 'حد الاستنى (ج.م)', 'شهور الطوارئ', 'آخر تعديل'], keys: ['emergency', 'savings', 'ops', 'living', 'fun', 'waitLimit', 'emergencyMonths', 'updated'] },
   savings:  { title: 'الادخار والطوارئ', headers: ['التاريخ', 'الخزنة', 'النوع', 'المبلغ', 'العملة', 'المصدر', 'ملاحظات'], keys: ['date', 'bucket', 'type', 'amount', 'currency', 'ref', 'notes'] },
@@ -219,6 +226,69 @@ export const BUCKETS = {
 };
 export const DEFAULT_PLAN = { emergency: 10, savings: 15, ops: 20, living: 45, fun: 10, waitLimit: 500, emergencyMonths: 3 };
 export const FUN_CATS = ['خروج وترفيه', 'لبس', 'مصاريف شخصية تانية'];
+
+/* ─────────── محافظي ─────────── */
+
+export const WALLET_KINDS = ['فودافون كاش', 'إنستاباي', 'اتصالات كاش', 'أورنج كاش', 'وي باي', 'حساب بنك', 'كاش في البيت', 'محفظة تانية'];
+export const WALLET_PURPOSES = ['صرف', 'شغل', 'ادخار', 'طوارئ'];
+export const isSavingPurpose = p => /ادخار|طوارئ/.test(p || '');
+SCHEMAS.wallets = [
+  { key: 'name', label: 'اسم المحفظة', type: 'text', icon: 'wallet', required: true, list: ['فودافون كاش', 'محفظة الادخار', 'محفظة الطوارئ', 'إنستاباي', 'البنك', 'كاش في البيت'] },
+  { key: 'kind', label: 'النوع', type: 'select', icon: 'smartphone', options: WALLET_KINDS },
+  { key: 'purpose', label: 'بتستخدمها في إيه', type: 'select', icon: 'target', options: WALLET_PURPOSES },
+  { key: 'opening', label: 'معاك فيها كام دلوقتي', type: 'money', icon: 'coins', required: true, hint: 'الرصيد الحالي، ومن هنا الأبلكيشن هيمشي الحساب' },
+  { key: 'openingDate', label: 'الرصيد ده بتاريخ', type: 'date', icon: 'calendar' },
+  { key: 'number', label: 'رقم المحفظة (اختياري)', type: 'tel', icon: 'phone' },
+  { key: 'notes', label: 'ملاحظات', type: 'textarea', icon: 'sticky-note', full: true },
+];
+SCHEMAS.walletTx = [
+  { key: 'date', label: 'التاريخ', type: 'date', icon: 'calendar' },
+  { key: 'wallet', label: 'المحفظة', type: 'select', icon: 'wallet', options: ['—'] },
+  { key: 'type', label: 'النوع', type: 'select', icon: 'arrow-left-right', options: ['دخل', 'مصروف', 'تحويل', 'تسوية', 'مطابقة'] },
+  { key: 'amount', label: 'المبلغ', type: 'money', icon: 'coins', required: true },
+  { key: 'fee', label: 'الرسوم', type: 'money', icon: 'percent' },
+  { key: 'toWallet', label: 'المحفظة التانية (في التحويل)', type: 'select', icon: 'wallet', options: ['—'] },
+  { key: 'category', label: 'الفئة', type: 'text', icon: 'tag' },
+  { key: 'desc', label: 'الوصف', type: 'text', icon: 'align-right', full: true },
+];
+
+// بيقرا رسالة SMS من فودافون كاش (أو أي محفظة): المبلغ، نوع العملية، الرسوم، والرصيد بعدها.
+// صيغة الرسايل بتختلف، فكل اللي بيطلع منها بيتعرض عليك تراجعه وتعدّله قبل الحفظ.
+export function parseWalletSms(raw) {
+  const t = toLatin(raw).replace(/٫/g, '.').replace(/(\d),(?=\d{3}\b)/g, '$1');
+  const num = s => Number(String(s).replace(/,/g, ''));
+  const money = '(?:EGP|LE|L\\.E|جنيه|جم|ج\\.م)?\\s*([\\d]+(?:\\.\\d+)?)';
+  const bal = t.match(new RegExp('(?:رصيد(?:ك|\\s*حسابك|\\s*محفظتك|\\s*المحفظة)?(?:\\s*الحالي|\\s*المتاح)?(?:\\s*هو|\\s*أصبح|\\s*اصبح)?|(?:current\\s*|available\\s*)?balance(?:\\s*is)?)\\s*[:=]?\\s*' + money, 'i'));
+  const fee = t.match(new RegExp('(?:رسوم|مصاريف(?:\\s*الخدمة)?|عمولة|fees?)\\s*(?:الخدمة)?\\s*[:=]?\\s*' + money, 'i'));
+  const am = t.match(new RegExp('(?:بمبلغ|مبلغ|بقيمة|قيمة|amount(?:\\s*of)?)\\s*[:=]?\\s*' + money, 'i'))
+    || t.match(/([\d]+(?:\.\d+)?)\s*(?:جنيه|جم|ج\.م|EGP|LE)/i)
+    || t.match(/(?:EGP|LE|L\.E)\s*([\d]+(?:\.\d+)?)/i);
+  const phone = (t.match(/(?:\+?20)?(01[0125]\d{8})/) || [])[1] || '';
+  const toSomeone = /(?:تحويل|دفع|ارسال|إرسال)\s*(?:مبلغ)?[\s\S]*?(?:إلى|الى|ل)\s*(?:رقم|حساب|محفظة)/.test(t) || /sent|transfer(?:red)?\s*to/i.test(t);
+  const incoming = /استلام|استلمت|تم\s*(?:إيداع|ايداع|إضافة|اضافة)|إيداع|ايداع|received|deposit|وارد|استرداد|refund/i.test(t);
+  const outgoing = /تحويل|حولت|تم\s*دفع|دفع|شراء|سحب|خصم|sent|transfer|withdraw|paid|purchase/i.test(t);
+  return {
+    type: incoming && !toSomeone ? 'in' : outgoing ? 'out' : incoming ? 'in' : null,
+    amount: am ? num(am[1]) : null, balance: bal ? num(bal[1]) : null, fee: fee ? num(fee[1]) : 0,
+    phoneTail: phone ? phone.slice(-4) : '', withdraw: /سحب|withdraw/i.test(t),
+  };
+}
+
+/* ─────────── رسالة عرض السعر ─────────── */
+// الأماكن اللي بين {} بتتملي لوحدها، وكل الباقي إنت تكتبه زي ما تحب
+export const QUOTE_PLACEHOLDERS = ['{البنود}', '{الإجمالي}', '{المقدم}', '{المدة}', '{الملاحظات}', '{طريقة_الدفع}', '{رقم_فودافون_كاش}'];
+export const DEFAULT_QUOTE_TEMPLATE = `أهلًا بحضرتك،
+تفاصيل عرض السعر الخاص بكتابك:
+
+{البنود}
+
+الإجمالي: {الإجمالي}
+المقدم المطلوب لتأكيد الحجز والبدء (50%): {المقدم}، والباقي عند التسليم.
+{المدة}
+
+{الملاحظات}
+
+{طريقة_الدفع}`;
 
 /* ─────────── فهم النصوص ─────────── */
 
@@ -458,6 +528,17 @@ export function demoData() {
       { _row: 2, date: sheetDay(new Date(y, m, new Date().getDate() - 3)), item: 'سماعة بلوتوث', price: '1800', currency: 'جنيه', bucket: 'فلوس حرة', status: 'مستني', decided: '', notes: '' },
       { _row: 3, date: sheetDay(new Date(y, m - 1, 12)), item: 'ساعة ذكية', price: '4500', currency: 'جنيه', bucket: 'فلوس حرة', status: 'لغيته', decided: d(1, 15), notes: '' },
     ],
+    wallets: [
+      { _row: 2, name: 'فودافون كاش', kind: 'فودافون كاش', purpose: 'صرف', opening: '3000', openingDate: d(0, 1), number: '', notes: '' },
+      { _row: 3, name: 'محفظة الادخار', kind: 'فودافون كاش', purpose: 'ادخار', opening: '750', openingDate: d(0, 1), number: '', notes: '' },
+    ],
+    walletTx: [
+      { _row: 2, date: d(0, 2), wallet: 'فودافون كاش', type: 'دخل', amount: '6000', fee: '', balanceAfter: '', category: 'دخل تاني', desc: 'مرتب شغل KDP', toWallet: '', ref: '' },
+      { _row: 3, date: d(0, 3), wallet: 'فودافون كاش', type: 'مصروف', amount: '450', fee: '1', balanceAfter: '', category: 'إنترنت واتصالات', desc: 'باقة إنترنت البيت', toWallet: '', ref: '' },
+      { _row: 4, date: d(0, 4), wallet: 'فودافون كاش', type: 'تحويل', amount: '1000', fee: '', balanceAfter: '', category: 'ادخار', desc: 'تحويش الشهر', toWallet: 'محفظة الادخار', ref: '' },
+      { _row: 5, date: d(0, 5), wallet: 'فودافون كاش', type: 'مطابقة', amount: '0', fee: '', balanceAfter: '7549', category: '', desc: 'مطابقة الرصيد', toWallet: '', ref: '' },
+    ],
+    appSettings: [],
     ads: [
       { _row: 2, date: d(1, 10), book: 'حسام فؤاد', campaign: 'Auto - Launch', type: 'Sponsored Products - Auto', spend: '42', sales: '96', orders: '12', clicks: '160', impressions: '38000', notes: '' },
       { _row: 3, date: d(0, 3), book: 'حسام فؤاد', campaign: 'Exact keywords', type: 'Sponsored Products - Keywords', spend: '30', sales: '118', orders: '15', clicks: '95', impressions: '14000', notes: '' },

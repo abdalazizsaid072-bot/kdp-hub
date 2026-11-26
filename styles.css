@@ -380,7 +380,7 @@ table.data td.n { font-variant-numeric: tabular-nums; text-align: left; }
 .result.hl small { color: rgba(255,255,255,.8); }
 .cover-diagram { margin-top: 16px; }
 .cover-diagram svg { width: 100%; height: auto; max-height: 220px; }
-pre.msg { white-space: pre-wrap; background: var(--surface-2); border: 1px solid var(--border); border-radius: 14px; padding: 14px; font-family: var(--font); font-size: 14px; margin: 12px 0 0; }
+.msg { white-space: pre-wrap; color: var(--text); line-height: 1.7; background: var(--surface-2); border: 1px solid var(--border); border-radius: 14px; padding: 14px; font-family: var(--font); font-size: 14px; margin: 12px 0 0; }
 
 .more-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
 .more-tile { display: flex; flex-direction: column; gap: 10px; padding: 18px; }
@@ -430,7 +430,9 @@ code { background: var(--surface-2); border: 1px solid var(--border); border-rad
 .money-details .list-item { padding: 8px 4px; }
 
 /* Editable message + wallets */
-textarea.msg-edit { width: 100%; min-height: 260px; resize: vertical; color: var(--text); line-height: 1.7; outline: none; }
+div.msg[contenteditable] { outline: none; cursor: text; transition: border-color .15s, box-shadow .15s; }
+div.msg[contenteditable]:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+textarea.msg-edit { width: 100%; min-height: 260px; resize: vertical; outline: none; display: block; }
 textarea.msg-edit:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
 #qTplBox summary::-webkit-details-marker { display: none; }
 .wcard .env-num b { font-size: 28px; }

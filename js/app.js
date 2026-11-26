@@ -14,7 +14,7 @@ const LABELS = { clients: 'عميل / مشروع', tasks: 'مهمة', expenses: 
 const SHEET_ICONS = { clients: 'user-plus', tasks: 'square-check', expenses: 'receipt', ads: 'target', notes: 'notebook-pen' };
 LABELS.payments = 'تحويل'; LABELS.campaigns = 'حملة إعلانية'; LABELS.campaignIncome = 'إيراد حملة'; LABELS.subscriptions = 'اشتراك أو التزام'; LABELS.installments = 'قسط'; LABELS.otherIncome = 'دخل'; LABELS.goals = 'هدف'; LABELS.savings = 'حركة ادخار'; LABELS.wishlist = 'حاجة في قائمة الاستنى'; LABELS.wallets = 'محفظة'; LABELS.walletTx = 'حركة محفظة';
 Object.assign(SHEET_ICONS, { subscriptions: 'repeat', installments: 'calendar-range', otherIncome: 'hand-coins', goals: 'flag', savings: 'piggy-bank', wallets: 'wallet', walletTx: 'arrow-left-right' });
-const APP_VERSION = '2026.11.23';
+const APP_VERSION = '2026.11.26';
 
 const S = {
   settings: D.loadSettings(),
@@ -2268,7 +2268,9 @@ VIEWS.tools = {
       $('#qTplReset').onclick = () => { tpl.value = D.DEFAULT_QUOTE_TEMPLATE; saveVals([['quoteTemplate', '']], 'رجعت الرسالة الافتراضية'); };
     }
     const run = { quote: calcQuote, royalty: calcRoyalty, cover: calcCover, ads: calcAds }[S.toolTab];
-    tool.addEventListener('input', run); tool.addEventListener('change', run);
+    // الكتابة جوه الرسالة نفسها متعيدش الحساب (وإلا تعديلك يتمسح)
+    const onEdit = e => { if (!e.target.closest('#qMsg')) run(); };
+    tool.addEventListener('input', onEdit); tool.addEventListener('change', onEdit);
     $$('#rFmt button').forEach(b => b.onclick = () => { $$('#rFmt button').forEach(x => x.classList.toggle('on', x === b)); calcRoyalty(); });
     run();
   },
@@ -2371,15 +2373,15 @@ function calcQuote() {
     <div class="result-grid" style="margin-top:0">${result('الإجمالي', `${I.fmt(total)} ${cur}`, true)}${result('المقدم 50%', `${I.fmt(deposit)} ${cur}`)}${result('مدة التنفيذ', days ? cnt(days, 'يوم', 'أيام') : '—')}</div>
     ${cheaper ? `<p class="small" style="color:var(--good-text);margin:12px 0 0">${ic('lightbulb')} ${cheaper}</p>` : ''}
     ${noVf ? `<p class="small" style="color:var(--warning-text);margin:12px 0 0">${ic('triangle-alert')} اكتب رقم فودافون كاش اللي العميل يحوّل عليه من <a href="#/settings" style="color:var(--accent)">الإعدادات</a> عشان يظهر في الرسالة.</p>` : ''}
-    <label class="muted small" style="display:block;margin-top:12px">${ic('pencil')} الرسالة (تقدر تعدّل فيها قبل ما تبعت)</label>
-    <textarea class="msg msg-edit" id="qMsg">${esc(msg)}</textarea>
+    <div class="msg" id="qMsg" contenteditable="plaintext-only" spellcheck="false" title="دوس على الرسالة لو عايز تعدّل فيها">${esc(msg)}</div>
+    <p class="muted small" style="margin:6px 0 0">${ic('pencil')} دوس على الرسالة لو عايز تعدّل فيها قبل ما تبعت</p>
     <div class="row" style="margin-top:12px">
       <button class="btn" id="qCopy">${ic('copy')} نسخ</button>
       <button class="btn wa" id="qWa">${ic('send')} ابعت واتساب</button>
       <button class="btn primary" id="qSave">${ic('user-plus')} سجّله كعميل</button>
     </div>` : emptyState('mouse-pointer-click', 'اختار خدمة واحدة على الأقل', '');
   paint();
-  const finalMsg = () => $('#qMsg')?.value || msg;
+  const finalMsg = () => $('#qMsg')?.innerText.trim() || msg;
   $('#qCopy') && ($('#qCopy').onclick = () => navigator.clipboard.writeText(finalMsg()).then(() => toast('اتنسخ', 'ok')));
   $('#qWa') && ($('#qWa').onclick = () => window.open(`https://wa.me/?text=${encodeURIComponent(finalMsg())}`, '_blank', 'noopener'));
   $('#qSave') && ($('#qSave').onclick = () => openForm('clients', null, {
